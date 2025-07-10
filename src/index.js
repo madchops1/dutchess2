@@ -238,11 +238,32 @@ class TradingBot {
       await this.coinbaseService.initialize();
       await this.tradingEngine.initialize();
       
+      // Start and register strategies
+      this.strategyManager.startStrategy('sma', { period: 20 });
+      
+      // Debug: Check if strategy was started
+      logger.info(`[DEBUG] Active strategies after start: ${Array.from(this.strategyManager.activeStrategies.keys())}`);
+      
       // Subscribe to price updates from Coinbase service
       this.coinbaseService.subscribe((event, data) => {
         if (event === 'price') {
           // Forward price updates to trading engine
           this.tradingEngine.handlePriceUpdate(data);
+          
+          // Forward to all active strategies
+          const activeStrategies = this.strategyManager.activeStrategies;
+          logger.info(`[DEBUG] Forwarding price to ${activeStrategies.size} strategies for ${data.productId}`);
+          
+          for (const [name, strategy] of activeStrategies) {
+            logger.info(`[DEBUG] Forwarding to strategy: ${name}`);
+            if (strategy && strategy.handleMarketData) {
+              strategy.handleMarketData(event, data);
+            } else if (strategy && strategy.onPriceUpdate) {
+              strategy.onPriceUpdate(data);
+            } else {
+              logger.warn(`[DEBUG] Strategy ${name} missing handleMarketData/onPriceUpdate method`);
+            }
+          }
           
           // Emit to connected frontend clients
           logger.info(`[PRICE] Emitting price-update to ${this.io.engine.clientsCount} clients for ${data.productId}`);
