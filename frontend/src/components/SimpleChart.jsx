@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { 
   LineChart, 
   Line, 
@@ -12,10 +12,16 @@ import {
 import { TrendingUp, CandlestickChart } from 'lucide-react'
 import { socket } from '../lib/socket';
 
-const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, tradingMode }) => {
+const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, tradingMode, strategies = [] }) => {
   const [chartData, setChartData] = useState([])
   const [signals, setSignals] = useState([])
+  const [crossoverSignals, setCrossoverSignals] = useState([])
   const [isSocketConnected, setIsSocketConnected] = useState(socket.connected)
+
+  // Helper function to check if SMA strategy is running
+  const isSmaStrategyActive = () => {
+    return strategies.some(strategy => strategy.name === 'sma' && strategy.active)
+  }
 
   useEffect(() => {
     function handleConnect() {
@@ -106,6 +112,39 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
     }
   }, [isSocketConnected, currentCrypto, tradingMode])
 
+  // Listen for real-time crossover events (for grey markers)
+  useEffect(() => {
+    if (!isSocketConnected) return
+    
+    function handleCrossover(crossoverSignal) {
+      console.log('[SimpleChart] Received crossover signal:', crossoverSignal)
+      
+      // Get current crypto identifier
+      const currentCryptoId = currentCrypto?.id || currentCrypto?.symbol || currentCrypto?.productId
+      const signalProductId = crossoverSignal.productId || crossoverSignal.data?.productId || crossoverSignal.symbol
+      
+      // Only add crossover signals for the current crypto product
+      if (signalProductId === currentCryptoId) {
+        console.log('[SimpleChart] ✅ Adding crossover signal for current crypto')
+        
+        const crossoverWithTimestamp = {
+          ...crossoverSignal,
+          timestamp: crossoverSignal.timestamp || new Date().toISOString()
+        }
+        
+        setCrossoverSignals(prev => [...prev, crossoverWithTimestamp])
+      }
+    }
+    
+    console.log('[SimpleChart] Registering crossover handler for crypto:', currentCrypto?.id)
+    socket.on('crossover', handleCrossover)
+    
+    return () => {
+      console.log('[SimpleChart] Unregistering crossover handler')
+      socket.off('crossover', handleCrossover)
+    }
+  }, [isSocketConnected, currentCrypto])
+
   // Process data for chart including signals
   useEffect(() => {
     if (!data || data.length === 0) {
@@ -113,8 +152,9 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
       return
     }
     
-    // Calculate SMA if we have enough data
+    // Calculate SMA only if SMA strategy is active and we have enough data
     const period = smaPeriod || 20
+    const shouldShowSMA = isSmaStrategyActive()
     
     // Convert dates to numbers if needed
     const processedData = data.map(item => ({
@@ -138,16 +178,26 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
       filteredData = processedData.filter(item => now - item.timestamp < timeWindow);
     }
     
-    // Calculate SMAs on filtered data
+    // Calculate SMAs on filtered data only if strategy is active
     if (filteredData.length > 0) {
-      const prices = filteredData.map(d => d.price);
-      const sma = calculateSMA(prices, period);
+      let withSMA;
       
-      // Add SMA to chart data
-      const withSMA = filteredData.map((item, index) => ({
-        ...item,
-        sma: index >= period - 1 ? sma[index - (period - 1)] : null
-      }));
+      if (shouldShowSMA) {
+        const prices = filteredData.map(d => d.price);
+        const sma = calculateSMA(prices, period);
+        
+        // Add SMA to chart data
+        withSMA = filteredData.map((item, index) => ({
+          ...item,
+          sma: index >= period - 1 ? sma[index - (period - 1)] : null
+        }));
+      } else {
+        // Don't calculate SMA when strategy is not active
+        withSMA = filteredData.map(item => ({
+          ...item,
+          sma: null
+        }));
+      }
       
       // Add signal data points at their exact timestamps
       const currentCryptoId = currentCrypto?.id || currentCrypto?.symbol || currentCrypto?.productId;
@@ -181,34 +231,77 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
         console.log('[SimpleChart] Signal data point created:', dataPoint);
         return dataPoint;
       });
+
+      // Create separate data points for crossover signals (grey markers)
+      const relevantCrossoverSignals = crossoverSignals.filter(s => {
+        const signalProductId = s.productId || s.product_id || s.symbol;
+        return signalProductId === currentCryptoId;
+      });
+
+      const crossoverDataPoints = relevantCrossoverSignals.map(crossover => {
+        console.log('[SimpleChart] Creating crossover data point:', {
+          direction: crossover.direction,
+          timestamp: crossover.timestamp,
+          price: crossover.data?.price
+        });
+        
+        const dataPoint = {
+          timestamp: new Date(crossover.timestamp).getTime(),
+          price: crossover.data.price,
+          sma: null,
+          // Create separate fields for buy and sell crossovers for color-coding
+          buyCrossover: crossover.direction === 'BUY' ? crossover.data.price : null,
+          sellCrossover: crossover.direction === 'SELL' ? crossover.data.price : null,
+          crossoverDirection: crossover.direction, // 'BUY' or 'SELL' direction
+          isCrossoverPoint: true
+        };
+        
+        return dataPoint;
+      });
       
-      // Merge regular data with signal data points and sort by timestamp
-      const allDataPoints = [...withSMA, ...signalDataPoints];
+      // Merge regular data with signal data points and crossover points, then sort by timestamp
+      const allDataPoints = [...withSMA, ...signalDataPoints, ...crossoverDataPoints];
       allDataPoints.sort((a, b) => a.timestamp - b.timestamp);
       
       console.log('[SimpleChart] Final chart data points with signals:', allDataPoints.filter(p => p.buySignal || p.sellSignal).length);
       console.log('[SimpleChart] Buy signal points:', allDataPoints.filter(p => p.buySignal).length);
       console.log('[SimpleChart] Sell signal points:', allDataPoints.filter(p => p.sellSignal).length);
+      console.log('[SimpleChart] Buy crossover points:', allDataPoints.filter(p => p.buyCrossover).length);
+      console.log('[SimpleChart] Sell crossover points:', allDataPoints.filter(p => p.sellCrossover).length);
       
       setChartData(allDataPoints);
     } else {
       setChartData(filteredData);
     }
-  }, [data, timeRange, smaPeriod, signals, currentCrypto]);
+  }, [data, timeRange, smaPeriod, signals, crossoverSignals, currentCrypto, strategies]);
   
   // Clear signals when crypto changes
   useEffect(() => {
-    console.log('[SimpleChart] Crypto changed, clearing signals')
+    console.log('[SimpleChart] Crypto changed, clearing signals and crossovers')
     setSignals([])
+    setCrossoverSignals([])
   }, [currentCrypto?.id])
   
-  // Clear signals when trading mode changes to stopped
+  // Clear signals only when starting a new trading/simulation session
+  // NOT when stopping - this allows users to review past trades
+  const previousMode = useRef(tradingMode)
   useEffect(() => {
-    if (tradingMode === 'stopped') {
-      console.log('[SimpleChart] Trading stopped, clearing signals')
+    // Only clear trade signals when transitioning FROM stopped TO active/simulation
+    if (previousMode.current === 'stopped' && (tradingMode === 'active' || tradingMode === 'simulation')) {
+      console.log('[SimpleChart] Starting new trading session, clearing old trade signals')
       setSignals([])
     }
+    
+    previousMode.current = tradingMode
   }, [tradingMode])
+  
+  // Clear crossover signals when SMA strategy is stopped
+  useEffect(() => {
+    if (!isSmaStrategyActive()) {
+      console.log('[SimpleChart] SMA strategy stopped, clearing crossover signals')
+      setCrossoverSignals([])
+    }
+  }, [strategies])
   
   // Helper function to calculate Simple Moving Average
   const calculateSMA = (prices, period) => {
@@ -262,7 +355,7 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
         <div className="bg-gray-800 border border-gray-600 rounded-lg p-3 shadow-lg">
           <p className="text-gray-300">{`Time: ${formatTime(label)}`}</p>
           <p className="text-white font-semibold">{`Price: ${formatPrice(payload[0]?.value)}`}</p>
-          {payload.find(p => p.dataKey === 'sma')?.value && (
+          {isSmaStrategyActive() && payload.find(p => p.dataKey === 'sma')?.value && (
             <p className="text-green-400 font-semibold">{`SMA: ${formatPrice(payload.find(p => p.dataKey === 'sma')?.value)}`}</p>
           )}
           {data?.buySignal && (
@@ -270,6 +363,12 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
           )}
           {data?.sellSignal && (
             <p className="text-red-500 font-bold">🔴 SELL SIGNAL</p>
+          )}
+          {data?.buyCrossover && (
+            <p className="text-green-400 font-medium">📈 BUY Crossover</p>
+          )}
+          {data?.sellCrossover && (
+            <p className="text-red-400 font-medium">📉 SELL Crossover</p>
           )}
         </div>
       );
@@ -286,33 +385,77 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
   ];
   
   return (
-    <div className="card p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-white flex items-center">
-          <CandlestickChart className="h-5 w-5 mr-2 text-blue-500" />
-          {currentCrypto ? `${currentCrypto.name} Chart` : 'Price Chart'}
-          <span className="ml-4 text-sm text-gray-400">
-            {tradingMode === 'stopped' && '(Stopped)'}
-            {tradingMode === 'simulation' && `(Simulation - ${signals.filter(s => s.type === 'buy').length} buy, ${signals.filter(s => s.type === 'sell').length} sell)`}
-            {tradingMode === 'active' && `(Active Trading - ${signals.filter(s => s.type === 'buy').length} buy, ${signals.filter(s => s.type === 'sell').length} sell)`}
-          </span>
-        </h2>
-        <div className="flex items-center space-x-2">
-          {timeRangeButtons.map(button => (
-            <button
-              key={button.value}
-              className={`px-3 py-1 rounded text-sm ${
-                timeRange === button.value 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-              onClick={() => setTimeRange(button.value)}
-            >
-              {button.label}
-            </button>
-          ))}
+    <div className="space-y-4">
+      {/* Trading Mode Status Bar */}
+      <div className={`rounded-lg px-6 py-4 border-l-4 ${
+        tradingMode === 'stopped' 
+          ? 'bg-gray-800 border-gray-500' 
+          : tradingMode === 'simulation' 
+          ? 'bg-blue-900/30 border-blue-500' 
+          : 'bg-green-900/30 border-green-500'
+      }`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className={`w-3 h-3 rounded-full ${
+              tradingMode === 'stopped' 
+                ? 'bg-gray-500' 
+                : tradingMode === 'simulation' 
+                ? 'bg-blue-500 animate-pulse' 
+                : 'bg-green-500 animate-pulse'
+            }`}></div>
+            <div>
+              <h3 className={`font-semibold text-lg ${
+                tradingMode === 'stopped' 
+                  ? 'text-gray-300' 
+                  : tradingMode === 'simulation' 
+                  ? 'text-blue-300' 
+                  : 'text-green-300'
+              }`}>
+                {tradingMode === 'stopped' && 'Trading Stopped'}
+                {tradingMode === 'simulation' && 'Simulation Mode'}
+                {tradingMode === 'active' && 'Live Trading Active'}
+              </h3>
+              <p className="text-sm text-gray-400">
+                {tradingMode === 'stopped' && 'No strategies are running. Start a strategy to begin trading.'}
+                {tradingMode === 'simulation' && 'Virtual trading with paper money. No real funds at risk.'}
+                {tradingMode === 'active' && 'Real trading with actual funds. Monitor carefully!'}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-sm text-gray-400">Signals</div>
+            <div className="font-mono text-lg">
+              <span className="text-green-400">{signals.filter(s => s.type === 'buy').length} BUY</span>
+              <span className="text-gray-500 mx-2">|</span>
+              <span className="text-red-400">{signals.filter(s => s.type === 'sell').length} SELL</span>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Chart */}
+      <div className="card p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-semibold text-white flex items-center">
+            <CandlestickChart className="h-5 w-5 mr-2 text-blue-500" />
+            {currentCrypto ? `${currentCrypto.name} Chart` : 'Price Chart'}
+          </h2>
+          <div className="flex items-center space-x-2">
+            {timeRangeButtons.map(button => (
+              <button
+                key={button.value}
+                className={`px-3 py-1 rounded text-sm ${
+                  timeRange === button.value 
+                    ? 'bg-blue-600 text-white' 
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                onClick={() => setTimeRange(button.value)}
+              >
+                {button.label}
+              </button>
+            ))}
+          </div>
+        </div>
       
       <div className="h-80">
         {chartData.length > 0 ? (
@@ -345,14 +488,17 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
                 dot={false}
                 strokeWidth={2}
               />
-              <Line 
-                type="monotone" 
-                dataKey="sma" 
-                name={`SMA (${smaPeriod})`} 
-                stroke="#22c55e" 
-                dot={false}
-                strokeWidth={2}
-              />
+              {/* Only show SMA line when SMA strategy is active */}
+              {isSmaStrategyActive() && (
+                <Line 
+                  type="monotone" 
+                  dataKey="sma" 
+                  name={`SMA (${smaPeriod})`} 
+                  stroke="#22c55e" 
+                  dot={false}
+                  strokeWidth={2}
+                />
+              )}
               {/* Buy signals as line with dots only where signals exist */}
               <Line 
                 type="monotone" 
@@ -373,6 +519,27 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
                 connectNulls={false}
                 strokeWidth={0}
               />
+              {/* Crossover signals as small colored dots with half opacity */}
+              {/* Buy crossovers - light green with half opacity */}
+              <Line 
+                type="monotone" 
+                dataKey="buyCrossover" 
+                name="Buy Crossover" 
+                stroke="transparent"
+                dot={{ fill: '#22c55e', fillOpacity: 0.5, stroke: '#16a34a', strokeWidth: 1, r: 4 }}
+                connectNulls={false}
+                strokeWidth={0}
+              />
+              {/* Sell crossovers - light red with half opacity */}
+              <Line 
+                type="monotone" 
+                dataKey="sellCrossover" 
+                name="Sell Crossover" 
+                stroke="transparent"
+                dot={{ fill: '#ef4444', fillOpacity: 0.5, stroke: '#dc2626', strokeWidth: 1, r: 4 }}
+                connectNulls={false}
+                strokeWidth={0}
+              />
             </LineChart>
           </ResponsiveContainer>
         ) : (
@@ -383,6 +550,7 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

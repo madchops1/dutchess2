@@ -14,6 +14,23 @@ const logger = require('./utils/logger');
 // Load environment variables
 dotenv.config();
 
+// Add global error handlers for unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Promise Rejection:', {
+    reason: reason || 'Unknown reason',
+    promise: promise || 'Unknown promise',
+    stack: reason && reason.stack ? reason.stack : 'No stack trace available'
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack
+  });
+  // Don't exit the process for now, just log it
+});
+
 class TradingBot {
   constructor() {
     this.instanceId = Math.random().toString(36).substr(2, 9);
@@ -36,8 +53,12 @@ class TradingBot {
     this.setupRoutes();
     this.setupSocketIO();
     
-    // Pass Socket.IO instance to trading engine for real-time updates
+    // Pass Socket.IO instance to trading engine and strategy manager for real-time updates
     this.tradingEngine.setSocketIO(this.io);
+    this.strategyManager.setSocketIO(this.io);
+    
+    // Pass trading engine reference to strategy manager
+    this.strategyManager.setTradingEngine(this.tradingEngine);
   }
 
   async findAvailablePort(startPort = 3000) {
@@ -155,21 +176,61 @@ class TradingBot {
       res.json({ cryptos });
     });
 
-    this.app.post('/strategy/start', (req, res) => {
+    this.app.post('/strategy/start', async (req, res) => {
       const { strategyName, parameters } = req.body;
       try {
-        this.strategyManager.startStrategy(strategyName, parameters);
+        await this.strategyManager.startStrategy(strategyName, parameters);
         res.json({ success: true, message: `Strategy ${strategyName} started` });
+      } catch (error) {
+        logger.error(`Failed to start strategy ${strategyName}:`, error);
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/strategy/stop', async (req, res) => {
+      const { strategyName } = req.body;
+      try {
+        await this.strategyManager.stopStrategy(strategyName);
+        res.json({ success: true, message: `Strategy ${strategyName} stopped` });
       } catch (error) {
         res.status(400).json({ error: error.message });
       }
     });
 
-    this.app.post('/strategy/stop', (req, res) => {
-      const { strategyName } = req.body;
+    this.app.post('/strategy/update', async (req, res) => {
+      const { strategyName, parameters } = req.body;
       try {
-        this.strategyManager.stopStrategy(strategyName);
-        res.json({ success: true, message: `Strategy ${strategyName} stopped` });
+        await this.strategyManager.updateStrategy(strategyName, parameters);
+        res.json({ success: true, message: `Strategy ${strategyName} parameters updated` });
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/strategy/performance/:strategyName', (req, res) => {
+      const { strategyName } = req.params;
+      try {
+        const performance = this.strategyManager.getStrategyPerformance(strategyName);
+        if (performance) {
+          res.json({ success: true, performance });
+        } else {
+          res.status(404).json({ error: `Strategy ${strategyName} not found or not running` });
+        }
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/strategy/trades/:strategyName', (req, res) => {
+      const { strategyName } = req.params;
+      try {
+        const strategy = this.strategyManager.getStrategy(strategyName);
+        if (strategy && typeof strategy.getTrades === 'function') {
+          const trades = strategy.getTrades();
+          res.json({ success: true, trades });
+        } else {
+          res.status(404).json({ error: `Strategy ${strategyName} not found or not running` });
+        }
       } catch (error) {
         res.status(400).json({ error: error.message });
       }
@@ -213,6 +274,106 @@ class TradingBot {
       }
     });
 
+    // Debug endpoint to simulate frontend portfolio filtering
+    this.app.get('/debug/portfolio-filtering', (req, res) => {
+      const portfolio = this.tradingEngine.getPortfolio();
+      const allPrices = this.coinbaseService.getAllPrices();
+      
+      const cryptoInfo = {
+        USD: { icon: '💵', color: '#10B981', name: 'US Dollar' },
+        USDC: { icon: '💰', color: '#2775CA', name: 'USD Coin' },
+        BTC: { icon: '₿', color: '#F7931A', name: 'Bitcoin' },
+        ETH: { icon: '⟠', color: '#627EEA', name: 'Ethereum' },
+        ETH2: { icon: '⟠', color: '#627EEA', name: 'Ethereum 2.0' },
+        ADA: { icon: '₳', color: '#0033AD', name: 'Cardano' },
+        SOL: { icon: '◎', color: '#9945FF', name: 'Solana' },
+        DOT: { icon: '⬤', color: '#E6007A', name: 'Polkadot' },
+        MATIC: { icon: '⬟', color: '#8247E5', name: 'Polygon' },
+        POLY: { icon: '⬟', color: '#8247E5', name: 'Polygon' },
+        AVAX: { icon: '🔺', color: '#E84142', name: 'Avalanche' },
+        LINK: { icon: '🔗', color: '#375BD2', name: 'Chainlink' },
+        UNI: { icon: '🦄', color: '#FF007A', name: 'Uniswap' },
+        ATOM: { icon: '⚛️', color: '#2E3148', name: 'Cosmos' },
+        XRP: { icon: '💧', color: '#23292F', name: 'Ripple' },
+        XLM: { icon: '*', color: '#3F51B5', name: 'Stellar' },
+        LTC: { icon: 'Ł', color: '#A6A9AA', name: 'Litecoin' },
+        BCH: { icon: '₿', color: '#8DC351', name: 'Bitcoin Cash' },
+        DOGE: { icon: 'Ð', color: '#C2A633', name: 'Dogecoin' },
+        BSV: { icon: '₿', color: '#EAB300', name: 'Bitcoin SV' },
+        BAT: { icon: 'B', color: '#FF5000', name: 'Basic Attention Token' },
+        ENJ: { icon: 'E', color: '#624DBF', name: 'Enjin Coin' },
+        ZRX: { icon: 'Z', color: '#302C2C', name: '0x' },
+        ETC: { icon: 'Ξ', color: '#328332', name: 'Ethereum Classic' },
+        VET: { icon: '⚡', color: '#15BDFF', name: 'VeChain' },
+        ALGO: { icon: '△', color: '#000000', name: 'Algorand' },
+        TRON: { icon: '◉', color: '#FF060A', name: 'TRON' },
+        FTM: { icon: '👻', color: '#1969FF', name: 'Fantom' },
+        NEAR: { icon: '🌐', color: '#00C08B', name: 'NEAR Protocol' },
+        PBVAONFR: { icon: '🔒', color: '#FF6B35', name: 'Coinbase Vault' }
+      };
+      
+      const portfolioData = [];
+      let totalValue = 0;
+      let holdingsCount = 0;
+      const filteringLog = [];
+      
+      Object.entries(portfolio || {}).forEach(([currency, amount]) => {
+        const minAmount = (currency === 'USD' || currency === 'USDC') ? 0.001 : 0.0000001;
+        const passesFilter = amount > minAmount;
+        
+        filteringLog.push({
+          currency,
+          amount,
+          minAmount,
+          passesFilter,
+          hasInfo: !!cryptoInfo[currency]
+        });
+        
+        if (passesFilter) {
+          const info = cryptoInfo[currency] || { icon: '❓', color: '#6B7280', name: currency };
+          
+          let priceSymbol = currency;
+          if (currency === 'POLY') {
+            priceSymbol = 'MATIC';
+          } else if (currency === 'ETH2') {
+            priceSymbol = 'ETH';
+          }
+          
+          let value;
+          let price = 1;
+          
+          if (currency === 'USD' || currency === 'USDC') {
+            value = amount;
+            price = 1;
+          } else {
+            const productId = `${priceSymbol}-USD`;
+            price = allPrices?.[productId] || 0;
+            value = amount * price;
+          }
+          
+          holdingsCount++;
+          totalValue += value;
+          portfolioData.push({
+            currency,
+            amount,
+            value,
+            price,
+            priceSymbol,
+            productId: currency === 'USD' || currency === 'USDC' ? 'N/A' : `${priceSymbol}-USD`
+          });
+        }
+      });
+      
+      res.json({
+        holdingsCount,
+        totalValue,
+        portfolioData,
+        filteringLog,
+        allPrices,
+        timestamp: new Date().toISOString()
+      });
+    });
+
     // Serve frontend for all other routes
     this.app.get('*', (req, res) => {
       res.sendFile(path.resolve(__dirname, '../frontend/dist/index.html'));
@@ -229,6 +390,52 @@ class TradingBot {
     });
   }
 
+  async subscribeToPortfolioCryptos() {
+    try {
+      const portfolio = this.tradingEngine.getPortfolio();
+      const productIds = [];
+      
+      // Define crypto metadata mapping
+      const cryptoMap = {
+        'BTC': 'BTC-USD',
+        'ETH': 'ETH-USD',
+        'ETH2': 'ETH-USD', // ETH2 maps to ETH-USD
+        'ADA': 'ADA-USD',
+        'DOT': 'DOT-USD',
+        'DOGE': 'DOGE-USD',
+        'XLM': 'XLM-USD',
+        'BSV': 'BSV-USD',
+        'BAT': 'BAT-USD',
+        'BCH': 'BCH-USD',
+        'LTC': 'LTC-USD',
+        'ENJ': 'ENJ-USD',
+        'POLY': 'MATIC-USD', // POLY maps to MATIC-USD
+        'ZRX': 'ZRX-USD',
+        'ETC': 'ETC-USD',
+        'USDC': 'USDC-USD'
+      };
+      
+      // Add BTC-USD as default
+      productIds.push('BTC-USD');
+      
+      // Add product IDs for all cryptos with non-zero balances
+      Object.keys(portfolio).forEach(currency => {
+        if (currency !== 'USD' && portfolio[currency] > 0 && cryptoMap[currency]) {
+          const productId = cryptoMap[currency];
+          if (!productIds.includes(productId)) {
+            productIds.push(productId);
+          }
+        }
+      });
+      
+      logger.info(`[STARTUP] Auto-subscribing to price feeds for: ${productIds.join(', ')}`);
+      await this.coinbaseService.updateSubscriptions(productIds);
+      
+    } catch (error) {
+      logger.error('Failed to auto-subscribe to portfolio cryptos:', error);
+    }
+  }
+
   async start() {
     try {
       const port = await this.findAvailablePort(this.port);
@@ -238,8 +445,8 @@ class TradingBot {
       await this.coinbaseService.initialize();
       await this.tradingEngine.initialize();
       
-      // Start and register strategies
-      this.strategyManager.startStrategy('sma', { period: 20 });
+      // Don't auto-start strategies - let frontend control them
+      // this.strategyManager.startStrategy('sma', { period: 20 });
       
       // Debug: Check if strategy was started
       logger.info(`[DEBUG] Active strategies after start: ${Array.from(this.strategyManager.activeStrategies.keys())}`);
@@ -273,6 +480,9 @@ class TradingBot {
       
       // Start WebSocket connection for real-time price data
       await this.coinbaseService.startPriceStream();
+      
+      // Auto-subscribe to portfolio cryptocurrencies after WebSocket is connected
+      await this.subscribeToPortfolioCryptos();
       
       // Set global reference for strategy signal emission
       global.tradingBot = this;

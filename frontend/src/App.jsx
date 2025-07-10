@@ -5,6 +5,7 @@ import SimpleChart from './components/SimpleChart'
 import StrategyControls from './components/StrategyControls'
 import LogViewer from './components/LogViewer'
 import Portfolio from './components/Portfolio'
+import PerformanceTracker from './components/PerformanceTracker'
 import { useApi } from './hooks/useSocket'
 import { socket } from './lib/socket'
 
@@ -144,11 +145,25 @@ function App() {
       }])
     })
 
+    socket.on('strategy-status', (data) => {
+      console.log('Real-time strategy status update:', data)
+      setStrategies(data.strategies)
+      
+      // Add a log entry about the strategy status change
+      setLogs(prev => [...prev.slice(-49), {
+        timestamp: new Date().toISOString(),
+        level: 'info',
+        message: `Strategy ${data.strategy} ${data.action}`,
+        service: 'strategy-manager'
+      }])
+    })
+
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('price-update');
       socket.off('portfolio-update');
+      socket.off('strategy-status');
     };
   }, [])
 
@@ -176,7 +191,17 @@ function App() {
     }
 
     try {
-      const endpoint = action === 'start' ? '/strategy/start' : '/strategy/stop'
+      let endpoint
+      if (action === 'start') {
+        endpoint = '/strategy/start'
+      } else if (action === 'stop') {
+        endpoint = '/strategy/stop'
+      } else if (action === 'update') {
+        endpoint = '/strategy/update'
+      } else {
+        throw new Error(`Unknown action: ${action}`)
+      }
+      
       const result = await postData(endpoint, { strategyName, parameters })
       
       // Add trade log
@@ -313,8 +338,8 @@ function App() {
   // Use heldCryptos for selector, fallback to BTC-USD if none
   const selectorCryptos = heldCryptos.length > 0 ? heldCryptos : availableCryptos.filter(c => c.symbol !== 'USD' && c.symbol !== 'USDC');
 
-  // For holdings count, only count nonzero, non-fiat cryptos
-  const holdingsCount = Object.entries(portfolio || {}).filter(([currency, amount]) => amount > 0 && currency !== 'USD' && currency !== 'USDC').length;
+  // For holdings count, count all nonzero holdings including USD and USDC
+  const holdingsCount = Object.entries(portfolio || {}).filter(([currency, amount]) => amount > 0).length;
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -442,6 +467,7 @@ function App() {
               timeRange={timeRange} 
               setTimeRange={setTimeRange}
               tradingMode={tradingMode}
+              strategies={strategies}
             />
             <Portfolio portfolio={portfolio} allPrices={allPrices} />
           </div>
@@ -455,6 +481,7 @@ function App() {
               onTradingModeChange={setTradingMode}
               tradingMode={tradingMode}
             />
+            <PerformanceTracker selectedStrategy="sma" />
             <LogViewer logs={logs} trades={trades} />
           </div>
         </div>

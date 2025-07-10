@@ -8,6 +8,8 @@ class MACDStrategy extends BaseStrategy {
     this.fastPeriod = parameters.fastPeriod || 12;
     this.slowPeriod = parameters.slowPeriod || 26;
     this.signalPeriod = parameters.signalPeriod || 9;
+    this.tradeAmount = parameters.tradeAmount || 0.01;
+    this.mode = parameters.mode || 'simulation';
     
     this.priceHistory = [];
     this.fastEMA = null;
@@ -19,6 +21,17 @@ class MACDStrategy extends BaseStrategy {
     this.signalHistory = [];
     this.position = 'none';
     this.prevHistogram = null;
+    this.trades = [];
+    
+    // Trading engine reference (will be set when strategy is started)
+    this.tradingEngine = null;
+    
+    logger.info(`[MACD] Strategy initialized with mode: ${this.mode}, fastPeriod: ${this.fastPeriod}, slowPeriod: ${this.slowPeriod}, signalPeriod: ${this.signalPeriod}, tradeAmount: ${this.tradeAmount}`);
+  }
+
+  setTradingEngine(tradingEngine) {
+    this.tradingEngine = tradingEngine;
+    logger.info(`[MACD] Trading engine reference set`);
   }
 
   onPriceUpdate(data) {
@@ -110,10 +123,12 @@ class MACDStrategy extends BaseStrategy {
     if (!this.macdLine || !this.signalLine || !this.histogram || this.prevHistogram === null) return;
     
     const currentPrice = this.priceHistory[this.priceHistory.length - 1];
+    const productId = 'BTC-USD'; // For now, hardcode to BTC
     
     // Bullish Signal: MACD crosses above Signal Line
     if (this.macdLine > this.signalLine && this.prevHistogram <= 0 && this.histogram > 0) {
       this.generateBuySignal({
+        productId,
         reason: 'MACD Bullish Crossover - MACD crossed above Signal Line',
         macdLine: this.macdLine,
         signalLine: this.signalLine,
@@ -127,6 +142,7 @@ class MACDStrategy extends BaseStrategy {
     // Bearish Signal: MACD crosses below Signal Line
     else if (this.macdLine < this.signalLine && this.prevHistogram >= 0 && this.histogram < 0) {
       this.generateSellSignal({
+        productId,
         reason: 'MACD Bearish Crossover - MACD crossed below Signal Line',
         macdLine: this.macdLine,
         signalLine: this.signalLine,
@@ -135,6 +151,130 @@ class MACDStrategy extends BaseStrategy {
         confidence: this.calculateConfidence('sell')
       });
       this.position = 'short';
+    }
+  }
+
+  async generateBuySignal(data) {
+    const signal = {
+      type: 'BUY',
+      productId: data.productId,
+      price: data.price,
+      macdLine: data.macdLine,
+      signalLine: data.signalLine,
+      histogram: data.histogram,
+      timestamp: new Date().toISOString(),
+      strategy: 'MACD',
+      reason: data.reason,
+      confidence: data.confidence,
+      data: {
+        ...data,
+        tradeAmount: this.tradeAmount,
+        mode: this.mode
+      }
+    };
+    
+    // Execute trade if in simulation or active mode
+    let trade = null;
+    if (this.mode === 'simulation' || this.mode === 'active') {
+      trade = await this.executeTrade(signal);
+      signal.trade = trade;
+    }
+    
+    logger.info(`[MACD] BUY signal: ${data.reason} at $${data.price}`);
+    if (trade) {
+      logger.info(`[MACD] Trade executed: ${trade.success ? 'SUCCESS' : 'FAILED'} BUY ${this.tradeAmount} ${data.productId} at $${data.price}`);
+    }
+    
+    this.onSignal(signal);
+  }
+
+  async generateSellSignal(data) {
+    const signal = {
+      type: 'SELL',
+      productId: data.productId,
+      price: data.price,
+      macdLine: data.macdLine,
+      signalLine: data.signalLine,
+      histogram: data.histogram,
+      timestamp: new Date().toISOString(),
+      strategy: 'MACD',
+      reason: data.reason,
+      confidence: data.confidence,
+      data: {
+        ...data,
+        tradeAmount: this.tradeAmount,
+        mode: this.mode
+      }
+    };
+    
+    // Execute trade if in simulation or active mode
+    let trade = null;
+    if (this.mode === 'simulation' || this.mode === 'active') {
+      trade = await this.executeTrade(signal);
+      signal.trade = trade;
+    }
+    
+    logger.info(`[MACD] SELL signal: ${data.reason} at $${data.price}`);
+    if (trade) {
+      logger.info(`[MACD] Trade executed: ${trade.success ? 'SUCCESS' : 'FAILED'} SELL ${this.tradeAmount} ${data.productId} at $${data.price}`);
+    }
+    
+    this.onSignal(signal);
+  }
+
+  async executeTrade(signal) {
+    const { type, productId, price } = signal;
+    
+    if (this.mode === 'stopped') {
+      logger.info(`[MACD] Trading is stopped. Signal ignored: ${type} ${productId}`);
+      return null;
+    }
+    
+    if (!this.tradingEngine) {
+      logger.error(`[MACD] Trading engine not available. Cannot execute ${type} for ${productId}`);
+      return { success: false, error: 'Trading engine not available' };
+    }
+    
+    try {
+      let result;
+      
+      if (type === 'BUY') {
+        result = await this.tradingEngine.executeBuyOrder(productId, this.tradeAmount);
+      } else if (type === 'SELL') {
+        result = await this.tradingEngine.executeSellOrder(productId, this.tradeAmount);
+      }
+      
+      if (result && result.success) {
+        // Record successful trade for performance tracking
+        const trade = {
+          id: Date.now() + Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type,
+          productId,
+          price,
+          amount: this.tradeAmount,
+          mode: this.mode,
+          orderId: result.order?.order_id || result.order?.id,
+          status: this.mode === 'active' ? 'executed' : 'simulated'
+        };
+        
+        this.trades.push(trade);
+        
+        logger.info(`[MACD] Trade ${trade.status}: ${type} ${this.tradeAmount} ${productId} at $${price}`);
+        
+        // Sync portfolio after trade
+        if (this.tradingEngine.syncPortfolio) {
+          await this.tradingEngine.syncPortfolio();
+        }
+        
+        return { success: true, trade };
+      } else {
+        logger.error(`[MACD] Trade failed: ${result?.error || 'Unknown error'}`);
+        return result || { success: false, error: 'Unknown error' };
+      }
+    } catch (error) {
+      logger.error(`[MACD] Error executing ${type} trade for ${productId}:`, error);
+      return { success: false, error: error.message };
     }
   }
 
@@ -174,6 +314,109 @@ class MACDStrategy extends BaseStrategy {
 
   getDescription() {
     return `MACD Strategy using ${this.fastPeriod}/${this.slowPeriod}/${this.signalPeriod} parameters. Generates buy signals on bullish crossovers and sell signals on bearish crossovers when MACD line crosses the signal line.`;
+  }
+
+  getPerformance() {
+    const totalTrades = this.trades.length;
+    const buyTrades = this.trades.filter(trade => trade.type === 'BUY').length;
+    const sellTrades = this.trades.filter(trade => trade.type === 'SELL').length;
+    
+    // Get current portfolio from trading engine
+    const currentPortfolio = this.tradingEngine ? this.tradingEngine.getPortfolio() : {};
+    
+    // Calculate total portfolio value (approximate)
+    let currentPortfolioValue = 0;
+    Object.entries(currentPortfolio).forEach(([symbol, amount]) => {
+      if (amount > 0) {
+        if (symbol === 'USD' || symbol === 'USDC') {
+          currentPortfolioValue += amount;
+        } else {
+          // Use last known price for crypto holdings
+          const currentPrice = this.priceHistory[this.priceHistory.length - 1] || 0;
+          currentPortfolioValue += amount * currentPrice;
+        }
+      }
+    });
+    
+    return {
+      totalTrades,
+      buyTrades,
+      sellTrades,
+      totalVolume: totalTrades * this.tradeAmount, // Approximate
+      currentPortfolioValue: parseFloat(currentPortfolioValue.toFixed(4)),
+      portfolio: currentPortfolio,
+      recentTrades: this.trades.slice(-10), // Last 10 trades
+      strategy: 'MACD',
+      fastPeriod: this.fastPeriod,
+      slowPeriod: this.slowPeriod,
+      signalPeriod: this.signalPeriod,
+      mode: this.mode
+    };
+  }
+
+  getTrades() {
+    return this.trades;
+  }
+
+  getPortfolio() {
+    return this.tradingEngine ? this.tradingEngine.getPortfolio() : {};
+  }
+
+  resetPerformance() {
+    this.trades = [];
+    logger.info(`[MACD] Performance tracking reset`);
+  }
+
+  onSignal(signal) {
+    // Add productId to signal if not present
+    if (!signal.productId && signal.data?.productId) {
+      signal.productId = signal.data.productId;
+    }
+    
+    // Emit signal over Socket.IO if available
+    if (global.tradingBot && global.tradingBot.io) {
+      logger.info(`[MACD] Emitting ${signal.type.toUpperCase()} signal for ${signal.productId}`);
+      global.tradingBot.io.emit('signal', signal);
+    } else {
+      logger.error(`[MACD] Cannot emit signal - Socket.IO not available`);
+    }
+  }
+
+  async updateParameters(parameters = {}) {
+    logger.info(`[MACD] Updating parameters:`, parameters);
+    
+    // Update parameters
+    if (parameters.fastPeriod !== undefined) {
+      this.fastPeriod = parameters.fastPeriod;
+      logger.info(`[MACD] Fast period updated to: ${this.fastPeriod}`);
+    }
+    
+    if (parameters.slowPeriod !== undefined) {
+      this.slowPeriod = parameters.slowPeriod;
+      logger.info(`[MACD] Slow period updated to: ${this.slowPeriod}`);
+    }
+    
+    if (parameters.signalPeriod !== undefined) {
+      this.signalPeriod = parameters.signalPeriod;
+      logger.info(`[MACD] Signal period updated to: ${this.signalPeriod}`);
+    }
+    
+    if (parameters.tradeAmount !== undefined) {
+      this.tradeAmount = parameters.tradeAmount;
+      logger.info(`[MACD] Trade amount updated to: ${this.tradeAmount}`);
+    }
+    
+    if (parameters.mode !== undefined) {
+      this.mode = parameters.mode;
+      logger.info(`[MACD] Trading mode updated to: ${this.mode}`);
+      
+      // Reset performance when switching to simulation/trading mode
+      if (this.mode === 'simulation' || this.mode === 'active') {
+        this.resetPerformance();
+        this.position = 'none';
+        logger.info(`[MACD] Reset performance and position for fresh start in ${this.mode} mode`);
+      }
+    }
   }
 }
 
