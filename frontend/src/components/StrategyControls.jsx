@@ -11,7 +11,8 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
   })
   const [smaConfig, setSmaConfig] = useState({
     period: 20,
-    minMovementPercent: 0.005, // 0.5% minimum price movement
+    targetGainPercent: 2.0, // 2% target gain
+    riskRewardRatio: 2.0, // 1:2 risk:reward ratio
     tradeAmount: 0.01 // Default trade amount
   });
 
@@ -31,7 +32,7 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
   const strategyConfig = {
     sma: {
       name: 'Simple Moving Average',
-      description: 'Buy when price crosses above SMA, sell when below',
+      description: 'Buy on SMA crossover with risk management via target/stop-loss',
       icon: TrendingUp,
       color: 'text-blue-500'
     },
@@ -182,18 +183,36 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
               
               <div className="col-span-2">
                 <label className="block text-sm font-medium text-gray-400 mb-2">
-                  Min Trade Value Movement (%)
+                  Target Gain (%)
                 </label>
                 <input
                   type="number"
-                  min="0.1"
-                  max="5"
+                  min="0.5"
+                  max="10"
                   step="0.1"
-                  value={smaConfig.minMovementPercent * 100}
-                  onChange={(e) => setSmaConfig(prev => ({...prev, minMovementPercent: parseFloat(e.target.value) / 100}))}
+                  value={smaConfig.targetGainPercent}
+                  onChange={(e) => setSmaConfig(prev => ({...prev, targetGainPercent: parseFloat(e.target.value)}))}
                   className="input w-full bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-400 mt-1">Minimum percentage change in trade value required for sell signals</p>
+                <p className="text-xs text-gray-400 mt-1">Target profit percentage before taking profit</p>
+              </div>
+              
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-400 mb-2">
+                  Risk:Reward Ratio
+                </label>
+                <select
+                  value={smaConfig.riskRewardRatio}
+                  onChange={(e) => setSmaConfig(prev => ({...prev, riskRewardRatio: parseFloat(e.target.value)}))}
+                  className="input w-full bg-gray-700 border-gray-600 text-white focus:border-blue-500"
+                >
+                  <option value={1}>1:1 (Risk 2% to gain 2%)</option>
+                  <option value={1.5}>1:1.5 (Risk 1.33% to gain 2%)</option>
+                  <option value={2}>1:2 (Risk 1% to gain 2%)</option>
+                  <option value={3}>1:3 (Risk 0.67% to gain 2%)</option>
+                  <option value={4}>1:4 (Risk 0.5% to gain 2%)</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">How much you're willing to risk vs. potential gain</p>
               </div>
             </div>
           </>

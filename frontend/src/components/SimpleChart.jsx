@@ -7,7 +7,8 @@ import {
   CartesianGrid, 
   Tooltip, 
   Legend, 
-  ResponsiveContainer
+  ResponsiveContainer,
+  ReferenceLine
 } from 'recharts'
 import { TrendingUp, CandlestickChart } from 'lucide-react'
 import { socket } from '../lib/socket';
@@ -17,10 +18,39 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
   const [signals, setSignals] = useState([])
   const [crossoverSignals, setCrossoverSignals] = useState([])
   const [isSocketConnected, setIsSocketConnected] = useState(socket.connected)
+  const [positionData, setPositionData] = useState(null)
 
   // Helper function to check if SMA strategy is running
   const isSmaStrategyActive = () => {
     return strategies.some(strategy => strategy.name === 'sma' && strategy.active)
+  }
+
+  // Fetch current position and risk management data
+  const fetchPositionData = async () => {
+    if (!currentCrypto?.id) {
+      setPositionData(null)
+      return
+    }
+
+    try {
+      const response = await fetch(`/strategy/position/sma/${currentCrypto.id}`)
+      if (response.ok) {
+        const result = await response.json()
+        if (result.success) {
+          console.log('[SimpleChart] Position data received:', result)
+          setPositionData(result)
+        } else {
+          console.log('[SimpleChart] No position data:', result)
+          setPositionData(null)
+        }
+      } else {
+        console.warn('[SimpleChart] Failed to fetch position data:', response.status)
+        setPositionData(null)
+      }
+    } catch (error) {
+      console.error('[SimpleChart] Error fetching position data:', error)
+      setPositionData(null)
+    }
   }
 
   useEffect(() => {
@@ -259,7 +289,7 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
         return dataPoint;
       });
       
-      // Merge regular data with signal data points and crossover points, then sort by timestamp
+      // Merge regular data with signal data points and crossover points, then sort by timestamp  
       const allDataPoints = [...withSMA, ...signalDataPoints, ...crossoverDataPoints];
       allDataPoints.sort((a, b) => a.timestamp - b.timestamp);
       
@@ -273,7 +303,7 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
     } else {
       setChartData(filteredData);
     }
-  }, [data, timeRange, smaPeriod, signals, crossoverSignals, currentCrypto, strategies]);
+  }, [data, timeRange, smaPeriod, signals, crossoverSignals, currentCrypto, strategies, positionData]);
   
   // Clear signals when crypto changes
   useEffect(() => {
@@ -303,6 +333,33 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
     }
   }, [strategies])
   
+  // Fetch position data when crypto, trading mode, or strategies change
+  useEffect(() => {
+    fetchPositionData()
+    
+    // Set up interval to refresh position data every 5 seconds
+    // More frequent updates when trading is active
+    const updateInterval = (tradingMode === 'simulation' || tradingMode === 'active') ? 5000 : 15000
+    const interval = setInterval(fetchPositionData, updateInterval)
+    
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [currentCrypto?.id, tradingMode, strategies])
+  
+  // Debug effect to log position data changes
+  useEffect(() => {
+    console.log('[SimpleChart] Position data changed:', {
+      hasPositionData: !!positionData,
+      position: positionData?.position,
+      hasRiskManagement: !!positionData?.riskManagement,
+      stopLossPrice: positionData?.riskManagement?.stopLossPrice,
+      takeProfitPrice: positionData?.riskManagement?.takeProfitPrice,
+      shouldShowStopLoss: positionData?.position === 'long' && positionData?.riskManagement?.stopLossPrice,
+      shouldShowTakeProfit: positionData?.position === 'long' && positionData?.riskManagement?.takeProfitPrice
+    })
+  }, [positionData])
+
   // Helper function to calculate Simple Moving Average
   const calculateSMA = (prices, period) => {
     const result = [];
@@ -357,6 +414,12 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
           <p className="text-white font-semibold">{`Price: ${formatPrice(payload[0]?.value)}`}</p>
           {isSmaStrategyActive() && payload.find(p => p.dataKey === 'sma')?.value && (
             <p className="text-green-400 font-semibold">{`SMA: ${formatPrice(payload.find(p => p.dataKey === 'sma')?.value)}`}</p>
+          )}
+          {data?.stopLossLine && (
+            <p className="text-red-400 font-semibold">{`Stop Loss: ${formatPrice(data.stopLossLine)}`}</p>
+          )}
+          {data?.takeProfitLine && (
+            <p className="text-green-400 font-semibold">{`Take Profit: ${formatPrice(data.takeProfitLine)}`}</p>
           )}
           {data?.buySignal && (
             <p className="text-green-500 font-bold">🟢 BUY SIGNAL</p>
@@ -472,7 +535,30 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
                 fontSize={12}
               />
               <YAxis 
-                domain={['auto', 'auto']}
+                domain={(() => {
+                  // Calculate Y-axis domain, optionally including risk management prices if they exist
+                  let minPrice = 'auto';
+                  let maxPrice = 'auto';
+                  
+                  if (positionData?.riskManagement && positionData?.position === 'long') {
+                    const { stopLossPrice, takeProfitPrice } = positionData.riskManagement;
+                    const chartPrices = chartData.map(d => d.price).filter(p => p && !isNaN(p));
+                    
+                    if (chartPrices.length > 0 && (stopLossPrice || takeProfitPrice)) {
+                      const dataMin = Math.min(...chartPrices);
+                      const dataMax = Math.max(...chartPrices);
+                      
+                      minPrice = Math.min(dataMin, stopLossPrice || dataMin, takeProfitPrice || dataMin) * 0.995;
+                      maxPrice = Math.max(dataMax, stopLossPrice || dataMax, takeProfitPrice || dataMax) * 1.005;
+                      
+                      console.log('[SimpleChart] Y-axis domain calculated with risk management:', {
+                        dataMin, dataMax, stopLossPrice, takeProfitPrice, minPrice, maxPrice
+                      });
+                    }
+                  }
+                  
+                  return [minPrice, maxPrice];
+                })()}
                 tickFormatter={formatPrice}
                 stroke="#9CA3AF"
                 fontSize={12}
@@ -540,6 +626,26 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
                 connectNulls={false}
                 strokeWidth={0}
               />
+              {/* Stop-loss line - show whenever we have position data with stop-loss */}
+              {positionData?.position === 'long' && 
+               positionData?.riskManagement?.stopLossPrice && (
+                <ReferenceLine 
+                  y={positionData.riskManagement.stopLossPrice}
+                  stroke="#ef4444" 
+                  strokeDasharray="5 5"
+                  strokeWidth={2}
+                />
+              )}
+              {/* Take-profit line - show whenever we have position data with take-profit */}
+              {positionData?.position === 'long' && 
+               positionData?.riskManagement?.takeProfitPrice && (
+                <ReferenceLine 
+                  y={positionData.riskManagement.takeProfitPrice}
+                  stroke="#22c55e" 
+                  strokeDasharray="5 5"
+                  strokeWidth={2}
+                />
+              )}
             </LineChart>
           </ResponsiveContainer>
         ) : (
@@ -551,6 +657,31 @@ const SimpleChart = ({ data, currentCrypto, smaPeriod, timeRange, setTimeRange, 
           </div>
         )}
       </div>
+      
+      {/* Position and Stop-Loss Info */}
+      {positionData?.position === 'long' && positionData?.riskManagement && (
+        <div className="mt-4 p-3 bg-gray-800/50 border border-gray-600 rounded text-sm">
+          <div className="text-yellow-400 font-medium">LONG Position Active</div>
+          <div className="grid grid-cols-3 gap-4 mt-2">
+            <div className="text-gray-400">
+              <span className="text-xs text-gray-500">Entry:</span><br />
+              {formatPrice(positionData.riskManagement.entryPrice)}
+            </div>
+            {positionData.riskManagement.stopLossPrice && (
+              <div className="text-red-400">
+                <span className="text-xs text-gray-500">Stop Loss:</span><br />
+                {formatPrice(positionData.riskManagement.stopLossPrice)}
+              </div>
+            )}
+            {positionData.riskManagement.takeProfitPrice && (
+              <div className="text-green-400">
+                <span className="text-xs text-gray-500">Take Profit:</span><br />
+                {formatPrice(positionData.riskManagement.takeProfitPrice)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );

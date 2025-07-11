@@ -48,6 +48,11 @@ class StrategyManager {
       strategy.setTradingEngine(this.tradingEngine);
     }
     
+    // Reset performance data for new session when starting a strategy
+    if (this.tradingEngine) {
+      this.tradingEngine.resetPerformanceData();
+    }
+    
     this.activeStrategies.set(strategyName, strategy);
     await strategy.start();
     logger.info(`Strategy started: ${strategyName}`);

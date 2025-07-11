@@ -49,6 +49,9 @@ class TradingBot {
     this.tradingEngine = new TradingEngine(this.coinbaseService);
     this.strategyManager = new StrategyManager();
     
+    // Track the currently selected crypto for strategy execution
+    this.selectedCrypto = 'BTC-USD'; // Default to BTC-USD
+    
     this.setupMiddleware();
     this.setupRoutes();
     this.setupSocketIO();
@@ -210,12 +213,9 @@ class TradingBot {
     this.app.get('/strategy/performance/:strategyName', (req, res) => {
       const { strategyName } = req.params;
       try {
-        const performance = this.strategyManager.getStrategyPerformance(strategyName);
-        if (performance) {
-          res.json({ success: true, performance });
-        } else {
-          res.status(404).json({ error: `Strategy ${strategyName} not found or not running` });
-        }
+        // Get performance data from trading engine instead of individual strategies
+        const performance = this.tradingEngine.getPerformanceSummary();
+        res.json({ success: true, performance });
       } catch (error) {
         res.status(400).json({ error: error.message });
       }
@@ -224,13 +224,69 @@ class TradingBot {
     this.app.get('/strategy/trades/:strategyName', (req, res) => {
       const { strategyName } = req.params;
       try {
-        const strategy = this.strategyManager.getStrategy(strategyName);
-        if (strategy && typeof strategy.getTrades === 'function') {
-          const trades = strategy.getTrades();
-          res.json({ success: true, trades });
-        } else {
-          res.status(404).json({ error: `Strategy ${strategyName} not found or not running` });
+        // Get trades from trading engine performance data
+        const performance = this.tradingEngine.getPerformanceSummary();
+        const trades = performance.recentTrades || [];
+        res.json({ success: true, trades });
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    // Get/Set selected crypto for strategy execution
+    this.app.get('/selected-crypto', (req, res) => {
+      res.json({ selectedCrypto: this.selectedCrypto });
+    });
+
+    this.app.post('/selected-crypto', (req, res) => {
+      const { crypto } = req.body;
+      if (!crypto) {
+        return res.status(400).json({ error: 'Crypto parameter is required' });
+      }
+      
+      this.selectedCrypto = crypto;
+      logger.info(`[MAIN] Selected crypto updated to: ${this.selectedCrypto}`);
+      
+      // Emit to frontend clients
+      this.io.emit('selected-crypto-changed', { selectedCrypto: this.selectedCrypto });
+      
+      res.json({ success: true, selectedCrypto: this.selectedCrypto });
+    });
+
+    // Get strategy position and risk management status
+    this.app.get('/strategy/position/:strategyName/:productId', (req, res) => {
+      const { strategyName, productId } = req.params;
+      try {
+        const strategy = this.strategyManager.activeStrategies.get(strategyName);
+        if (!strategy) {
+          return res.status(404).json({ error: `Strategy ${strategyName} not found or not active` });
         }
+        
+        // Get position status
+        const position = strategy.positions ? strategy.positions[productId] : 'none';
+        
+        // Get risk management status if method exists
+        let riskManagement = null;
+        if (typeof strategy.getRiskManagementStatus === 'function') {
+          riskManagement = strategy.getRiskManagementStatus(productId);
+        }
+        
+        res.json({ 
+          success: true, 
+          productId,
+          position,
+          riskManagement
+        });
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    // Reset performance data (new session)
+    this.app.post('/performance/reset', (req, res) => {
+      try {
+        this.tradingEngine.resetPerformanceData();
+        res.json({ success: true, message: 'Performance data reset for new session' });
       } catch (error) {
         res.status(400).json({ error: error.message });
       }
@@ -457,19 +513,23 @@ class TradingBot {
           // Forward price updates to trading engine
           this.tradingEngine.handlePriceUpdate(data);
           
-          // Forward to all active strategies
-          const activeStrategies = this.strategyManager.activeStrategies;
-          logger.info(`[DEBUG] Forwarding price to ${activeStrategies.size} strategies for ${data.productId}`);
-          
-          for (const [name, strategy] of activeStrategies) {
-            logger.info(`[DEBUG] Forwarding to strategy: ${name}`);
-            if (strategy && strategy.handleMarketData) {
-              strategy.handleMarketData(event, data);
-            } else if (strategy && strategy.onPriceUpdate) {
-              strategy.onPriceUpdate(data);
-            } else {
-              logger.warn(`[DEBUG] Strategy ${name} missing handleMarketData/onPriceUpdate method`);
+          // Only forward to strategies if this is the selected crypto
+          if (data.productId === this.selectedCrypto) {
+            const activeStrategies = this.strategyManager.activeStrategies;
+            logger.info(`[DEBUG] Forwarding price to ${activeStrategies.size} strategies for ${data.productId} (selected crypto)`);
+            
+            for (const [name, strategy] of activeStrategies) {
+              logger.info(`[DEBUG] Forwarding to strategy: ${name}`);
+              if (strategy && strategy.handleMarketData) {
+                strategy.handleMarketData(event, data);
+              } else if (strategy && strategy.onPriceUpdate) {
+                strategy.onPriceUpdate(data);
+              } else {
+                logger.warn(`[DEBUG] Strategy ${name} missing handleMarketData/onPriceUpdate method`);
+              }
             }
+          } else {
+            logger.debug(`[DEBUG] Skipping strategy forwarding for ${data.productId} (not selected crypto: ${this.selectedCrypto})`);
           }
           
           // Emit to connected frontend clients

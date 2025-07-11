@@ -47,6 +47,21 @@ function App() {
     fetchCryptos()
   }, [])
 
+  // Sync selected crypto with backend when app loads
+  useEffect(() => {
+    const syncSelectedCrypto = async () => {
+      if (selectedCrypto && availableCryptos.length > 0) {
+        try {
+          await postData('/selected-crypto', { crypto: selectedCrypto })
+          console.log(`Initial selected crypto synced with backend: ${selectedCrypto}`)
+        } catch (error) {
+          console.error('Failed to sync initial selected crypto with backend:', error)
+        }
+      }
+    }
+    syncSelectedCrypto()
+  }, [selectedCrypto, availableCryptos.length, postData])
+
   // Get current crypto details
   const currentCrypto = availableCryptos.find(crypto => crypto.id === selectedCrypto) || availableCryptos[0] || { id: 'BTC-USD', name: 'Bitcoin', symbol: 'BTC', icon: '₿' }
 
@@ -237,6 +252,14 @@ function App() {
     console.log(`Switching to cryptocurrency: ${id}`)
     setSelectedCrypto(id)
     setCryptoDropdownOpen(false)
+    
+    // Notify backend about the selected crypto
+    try {
+      await postData('/selected-crypto', { crypto: id })
+      console.log(`Backend notified of selected crypto: ${id}`)
+    } catch (error) {
+      console.error('Failed to notify backend of selected crypto:', error)
+    }
     
     // Clear existing data immediately
     setPriceData([])
@@ -481,7 +504,7 @@ function App() {
               onTradingModeChange={setTradingMode}
               tradingMode={tradingMode}
             />
-            <PerformanceTracker selectedStrategy="sma" />
+            <PerformanceTracker selectedStrategy="sma" tradingMode={tradingMode} />
             <LogViewer logs={logs} trades={trades} />
           </div>
         </div>

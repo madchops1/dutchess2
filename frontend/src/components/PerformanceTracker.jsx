@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, DollarSign, BarChart3, Users, Clock } from 'lucide-react'
+import { TrendingUp, TrendingDown, DollarSign, BarChart3, Users, Clock, AlertCircle } from 'lucide-react'
 
-const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
+const PerformanceTracker = ({ selectedStrategy = 'sma', tradingMode = 'stopped' }) => {
   const [performance, setPerformance] = useState(null)
   const [trades, setTrades] = useState([])
   const [loading, setLoading] = useState(true)
@@ -75,6 +75,12 @@ const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
     return parseFloat(value).toFixed(8)
   }
 
+  const formatDateTime = (timestamp) => {
+    return new Date(timestamp).toLocaleString()
+  }
+
+  const isSimulationMode = tradingMode === 'simulation'
+
   return (
     <div className="space-y-4">
       {/* Performance Summary */}
@@ -83,8 +89,18 @@ const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
           <h2 className="text-xl font-semibold text-white flex items-center">
             <BarChart3 className="h-5 w-5 mr-2 text-green-500" />
             Performance Summary
+            {isSimulationMode && (
+              <span className="ml-2 px-2 py-1 bg-blue-600 text-xs rounded-full text-white">
+                SIMULATION
+              </span>
+            )}
           </h2>
           <div className="text-sm text-gray-400">{selectedStrategy.toUpperCase()} Strategy</div>
+        </div>
+
+        {/* Session Info */}
+        <div className="mb-4 text-sm text-gray-400">
+          Session started: {formatDateTime(performance.sessionStartTime)}
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -139,34 +155,62 @@ const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
 
         <div className="grid grid-cols-2 gap-4 mt-4">
           <div className="bg-gray-800 p-4 rounded-lg">
-            <div className="text-sm text-gray-400 mb-1">Gross Profit</div>
-            <div className="text-lg font-semibold text-green-400">
-              {formatCurrency(performance.grossProfit)}
+            <div className="text-sm text-gray-400 mb-1">Realized P&L</div>
+            <div className={`text-lg font-semibold ${performance.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {formatCurrency(performance.realizedPnL)}
             </div>
           </div>
           <div className="bg-gray-800 p-4 rounded-lg">
-            <div className="text-sm text-gray-400 mb-1">Gross Loss</div>
-            <div className="text-lg font-semibold text-red-400">
-              {formatCurrency(performance.grossLoss)}
+            <div className="text-sm text-gray-400 mb-1">Unrealized P&L</div>
+            <div className={`text-lg font-semibold ${performance.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {formatCurrency(performance.unrealizedPnL)}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Virtual Portfolio */}
-      {Object.keys(performance.portfolio).length > 0 && (
+      {/* Trading Activity */}
+      {performance.totalTrades > 0 && (
         <div className="card p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Virtual Portfolio</h3>
+          <h3 className="text-lg font-semibold text-white mb-4">Trading Activity</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-gray-800 p-3 rounded-lg text-center">
+              <div className="text-sm text-gray-400">Buy Orders</div>
+              <div className="text-xl font-semibold text-green-400">{performance.buyTrades}</div>
+            </div>
+            <div className="bg-gray-800 p-3 rounded-lg text-center">
+              <div className="text-sm text-gray-400">Sell Orders</div>
+              <div className="text-xl font-semibold text-red-400">{performance.sellTrades}</div>
+            </div>
+            <div className="bg-gray-800 p-3 rounded-lg text-center">
+              <div className="text-sm text-gray-400">Winners</div>
+              <div className="text-xl font-semibold text-green-400">{performance.winningTrades}</div>
+            </div>
+            <div className="bg-gray-800 p-3 rounded-lg text-center">
+              <div className="text-sm text-gray-400">Losers</div>
+              <div className="text-xl font-semibold text-red-400">{performance.losingTrades}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Virtual Portfolio (only for simulation mode) */}
+      {isSimulationMode && Object.keys(performance.portfolio || {}).length > 0 && (
+        <div className="card p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <AlertCircle className="h-5 w-5 mr-2 text-blue-500" />
+            Simulated Positions
+          </h3>
           <div className="space-y-2">
-            {Object.entries(performance.portfolio).map(([symbol, holding]) => (
-              <div key={symbol} className="flex justify-between items-center bg-gray-800 p-3 rounded">
+            {Object.entries(performance.portfolio).map(([productId, position]) => (
+              <div key={productId} className="flex justify-between items-center bg-gray-800 p-3 rounded">
                 <div>
-                  <div className="font-medium text-white">{symbol}</div>
-                  <div className="text-sm text-gray-400">{formatCrypto(holding.amount)} coins</div>
+                  <div className="font-medium text-white">{productId}</div>
+                  <div className="text-sm text-gray-400">{formatCrypto(position.amount)} coins</div>
                 </div>
                 <div className="text-right">
-                  <div className="text-white">Avg: {formatCurrency(holding.avgPrice)}</div>
-                  <div className="text-sm text-gray-400">Cost: {formatCurrency(holding.totalCost)}</div>
+                  <div className="text-white">Avg: {formatCurrency(position.avgPrice)}</div>
+                  <div className="text-sm text-gray-400">Cost: {formatCurrency(position.totalCost)}</div>
                 </div>
               </div>
             ))}
@@ -175,21 +219,24 @@ const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
       )}
 
       {/* Recent Trades */}
-      {trades.length > 0 && (
+      {performance.recentTrades && performance.recentTrades.length > 0 && (
         <div className="card p-6">
           <h3 className="text-lg font-semibold text-white mb-4">Recent Trades</h3>
           <div className="space-y-2">
-            {trades.map((trade) => (
+            {performance.recentTrades.map((trade) => (
               <div key={trade.id} className="flex justify-between items-center bg-gray-800 p-3 rounded">
                 <div className="flex items-center">
-                  {trade.type === 'BUY' ? (
+                  {trade.side === 'BUY' ? (
                     <TrendingUp className="h-4 w-4 mr-2 text-green-500" />
                   ) : (
                     <TrendingDown className="h-4 w-4 mr-2 text-red-500" />
                   )}
                   <div>
-                    <div className="font-medium text-white">
-                      {trade.type} {trade.cryptoSymbol}
+                    <div className="font-medium text-white flex items-center">
+                      {trade.side} {trade.cryptoSymbol}
+                      {trade.isSimulated && (
+                        <span className="ml-2 px-1 py-0.5 bg-blue-600 text-xs rounded text-white">SIM</span>
+                      )}
                     </div>
                     <div className="text-sm text-gray-400">
                       {new Date(trade.timestamp).toLocaleTimeString()}
@@ -200,9 +247,14 @@ const PerformanceTracker = ({ selectedStrategy = 'sma' }) => {
                   <div className="text-white">
                     {formatCrypto(trade.amount)} @ {formatCurrency(trade.price)}
                   </div>
-                  {trade.profit !== undefined && (
-                    <div className={`text-sm ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      P&L: {formatCurrency(trade.profit)}
+                  {trade.realizedPnL !== undefined && trade.side === 'SELL' && (
+                    <div className={`text-sm ${trade.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      P&L: {formatCurrency(trade.realizedPnL)}
+                    </div>
+                  )}
+                  {trade.fees > 0 && (
+                    <div className="text-xs text-gray-500">
+                      Fee: {formatCurrency(trade.fees)}
                     </div>
                   )}
                 </div>
