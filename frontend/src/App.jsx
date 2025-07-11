@@ -3,6 +3,7 @@ import { Activity, TrendingUp, TrendingDown, DollarSign, Wallet, ChevronDown, Bi
 import { io } from 'socket.io-client'
 import SimpleChart from './components/SimpleChart'
 import StrategyControls from './components/StrategyControls'
+import TradeControls from './components/TradeControls'
 import LogViewer from './components/LogViewer'
 import Portfolio from './components/Portfolio'
 import PerformanceTracker from './components/PerformanceTracker'
@@ -27,6 +28,10 @@ function App() {
   const [timeRange, setTimeRange] = useState('1h')
   const [availableCryptos, setAvailableCryptos] = useState([])
   const [tradingMode, setTradingMode] = useState('stopped')
+  const [tradeConfig, setTradeConfig] = useState({
+    tradeAmount: 0.01
+  })
+  const [enabledStrategies, setEnabledStrategies] = useState(new Set(['sma']))
 
   const { fetchData, postData } = useApi()
 
@@ -364,6 +369,62 @@ function App() {
   // For holdings count, count all nonzero holdings including USD and USDC
   const holdingsCount = Object.entries(portfolio || {}).filter(([currency, amount]) => amount > 0).length;
 
+  const handleTradingModeChange = (mode) => {
+    setTradingMode(mode)
+    
+    // Update any running strategies with the new mode and trade config
+    strategies.forEach(strategy => {
+      if (strategy.active) {
+        let strategyParams = { 
+          mode,
+          ...tradeConfig // Include current trade config
+        };
+        
+        // For SMA strategy, include current SMA period if available
+        if (strategy.name === 'sma') {
+          strategyParams = {
+            ...strategyParams,
+            period: smaPeriod
+          };
+        }
+        
+        // Update the running strategy with new mode and config
+        handleStrategyAction('update', strategy.name, strategyParams);
+      }
+    });
+  }
+
+  const handleTradeConfigChange = (config) => {
+    setTradeConfig(config)
+    
+    // Update any running strategies with the new trade config
+    strategies.forEach(strategy => {
+      if (strategy.active) {
+        let strategyParams = { 
+          mode: tradingMode,
+          ...config // Include new trade config
+        };
+        
+        // For SMA strategy, include current SMA period if available
+        if (strategy.name === 'sma') {
+          strategyParams = {
+            ...strategyParams,
+            period: smaPeriod
+          };
+        }
+        
+        // Update the running strategy with new config
+        handleStrategyAction('update', strategy.name, strategyParams);
+      }
+    });
+  }
+
+  const handleEnabledStrategiesChange = (enabledStrategies) => {
+    setEnabledStrategies(enabledStrategies)
+    // TODO: Update backend with which strategies should generate trade signals
+    console.log('Enabled strategies for trading:', Array.from(enabledStrategies))
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
@@ -501,8 +562,17 @@ function App() {
               strategies={strategies} 
               onStrategyAction={handleStrategyAction}
               onSmaPeriodChange={setSmaPeriod}
-              onTradingModeChange={setTradingMode}
+              tradeConfig={tradeConfig}
               tradingMode={tradingMode}
+            />
+            <TradeControls
+              strategies={strategies}
+              tradingMode={tradingMode}
+              onTradingModeChange={handleTradingModeChange}
+              tradeConfig={tradeConfig}
+              onTradeConfigChange={handleTradeConfigChange}
+              enabledStrategies={enabledStrategies}
+              onEnabledStrategiesChange={handleEnabledStrategiesChange}
             />
             <PerformanceTracker selectedStrategy="sma" tradingMode={tradingMode} />
             <LogViewer logs={logs} trades={trades} />

@@ -1,25 +1,17 @@
 import { useState, useEffect } from 'react'
-import { Settings, Play, Square, TrendingUp, BarChart3, Zap, Pause, DollarSign } from 'lucide-react'
+import { Settings, Play, Square, TrendingUp, BarChart3, Zap } from 'lucide-react'
 
-const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onTradingModeChange, tradingMode: parentTradingMode = 'stopped' }) => {
+const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, tradeConfig, tradingMode }) => {
   const [selectedStrategy, setSelectedStrategy] = useState('sma')
-  const [tradingMode, setTradingMode] = useState(parentTradingMode) // Use parent's trading mode
   const [parameters, setParameters] = useState({
-    sma: { period: 20, tradeAmount: 0.01 },
-    rsi: { period: 14, oversold: 30, overbought: 70, tradeAmount: 0.01 },
-    macd: { fastPeriod: 12, slowPeriod: 26, signalPeriod: 9, tradeAmount: 0.01 }
+    sma: { period: 20 },
+    rsi: { period: 14, oversold: 30, overbought: 70, minMovementPercent: 0.5 },
+    macd: { fastPeriod: 12, slowPeriod: 26, signalPeriod: 9, minMovementPercent: 0.5 }
   })
   const [smaConfig, setSmaConfig] = useState({
     period: 20,
-    targetGainPercent: 2.0, // 2% target gain
-    riskRewardRatio: 2.0, // 1:2 risk:reward ratio
-    tradeAmount: 0.01 // Default trade amount
+    minMovementPercent: 0.5 // 0.5% minimum price movement
   });
-
-  // Sync local trading mode with parent's trading mode
-  useEffect(() => {
-    setTradingMode(parentTradingMode)
-  }, [parentTradingMode])
 
   // Sync smaConfig period with parameters
   useEffect(() => {
@@ -32,63 +24,44 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
   const strategyConfig = {
     sma: {
       name: 'Simple Moving Average',
-      description: 'Buy on SMA crossover with risk management via target/stop-loss',
+      description: 'Buy on SMA crossover with minimum movement filter and automatic risk management',
       icon: TrendingUp,
       color: 'text-blue-500'
     },
     rsi: {
       name: 'RSI Strategy',
-      description: 'Buy when oversold, sell when overbought',
+      description: 'Buy when oversold, sell when overbought with movement filtering',
       icon: BarChart3,
       color: 'text-green-500'
     },
     macd: {
       name: 'MACD Strategy',
-      description: 'Buy on bullish crossover, sell on bearish crossover',
+      description: 'Buy on bullish crossover, sell on bearish crossover with movement filtering',
       icon: Zap,
       color: 'text-purple-500'
     }
   }
 
-  const handleTradingModeChange = (mode) => {
-    setTradingMode(mode)
-    if (onTradingModeChange) {
-      onTradingModeChange(mode)
-    }
-    
-    // Update any running strategies with the new mode
-    strategies.forEach(strategy => {
-      if (strategy.active) {
-        let strategyParams = { mode };
-        
-        // For SMA strategy, include current smaConfig
-        if (strategy.name === 'sma') {
-          strategyParams = {
-            ...smaConfig,
-            mode
-          };
-        }
-        
-        // Update the running strategy with new mode
-        onStrategyAction('update', strategy.name, strategyParams);
-      }
-    });
-  }
-
   const handleStartStrategy = () => {
     let strategyParams = parameters[selectedStrategy];
     
-    // For SMA strategy, merge in the smaConfig parameters
+    // For SMA strategy, merge in the smaConfig parameters and tradeConfig
     if (selectedStrategy === 'sma') {
       strategyParams = {
         ...parameters[selectedStrategy],
         ...smaConfig,
-        mode: tradingMode // Use current trading mode
+        ...tradeConfig, // Include trade configuration from parent
+        mode: tradingMode, // Use current trading mode from parent
+        // Convert percentage from whole number to decimal (0.5% -> 0.005)
+        minMovementPercent: smaConfig.minMovementPercent / 100
       };
     } else {
       strategyParams = {
         ...parameters[selectedStrategy],
-        mode: tradingMode // Use current trading mode
+        ...tradeConfig, // Include trade configuration from parent
+        mode: tradingMode, // Use current trading mode from parent
+        // Convert percentage from whole number to decimal for other strategies
+        minMovementPercent: parameters[selectedStrategy].minMovementPercent / 100
       };
     }
     
@@ -98,13 +71,21 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
   const handleUpdateStrategy = () => {
     let strategyParams = {};
     
-    // For SMA strategy, use the smaConfig parameters
+    // For SMA strategy, use the smaConfig parameters and tradeConfig
     if (selectedStrategy === 'sma') {
       strategyParams = {
-        ...smaConfig
+        ...smaConfig,
+        ...tradeConfig, // Include trade configuration from parent
+        // Convert percentage from whole number to decimal (0.5% -> 0.005)
+        minMovementPercent: smaConfig.minMovementPercent / 100
       };
     } else {
-      strategyParams = parameters[selectedStrategy];
+      strategyParams = {
+        ...parameters[selectedStrategy],
+        ...tradeConfig, // Include trade configuration from parent
+        // Convert percentage from whole number to decimal for other strategies
+        minMovementPercent: parameters[selectedStrategy].minMovementPercent / 100
+      };
     }
     
     onStrategyAction('update', selectedStrategy, strategyParams)
@@ -150,7 +131,7 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
         
         {strategy === 'sma' && (
           <>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-2">
                   SMA Period
@@ -163,56 +144,23 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
                   onChange={(e) => setSmaConfig(prev => ({...prev, period: parseInt(e.target.value)}))}
                   className="input w-full bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-blue-500"
                 />
+                <p className="text-xs text-gray-400 mt-1">Number of periods for moving average calculation</p>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-2">
-                  Trade Amount
+                  Min Movement (%)
                 </label>
                 <input
                   type="number"
-                  min="0.001"
-                  max="10"
-                  step="0.001"
-                  value={smaConfig.tradeAmount}
-                  onChange={(e) => setSmaConfig(prev => ({...prev, tradeAmount: parseFloat(e.target.value)}))}
-                  className="input w-full bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-blue-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">Amount of crypto to trade</p>
-              </div>
-              
-              <div className="col-span-2">
-                <label className="block text-sm font-medium text-gray-400 mb-2">
-                  Target Gain (%)
-                </label>
-                <input
-                  type="number"
-                  min="0.5"
-                  max="10"
+                  min="0.1"
+                  max="5.0"
                   step="0.1"
-                  value={smaConfig.targetGainPercent}
-                  onChange={(e) => setSmaConfig(prev => ({...prev, targetGainPercent: parseFloat(e.target.value)}))}
+                  value={smaConfig.minMovementPercent}
+                  onChange={(e) => setSmaConfig(prev => ({...prev, minMovementPercent: parseFloat(e.target.value)}))}
                   className="input w-full bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-400 mt-1">Target profit percentage before taking profit</p>
-              </div>
-              
-              <div className="col-span-2">
-                <label className="block text-sm font-medium text-gray-400 mb-2">
-                  Risk:Reward Ratio
-                </label>
-                <select
-                  value={smaConfig.riskRewardRatio}
-                  onChange={(e) => setSmaConfig(prev => ({...prev, riskRewardRatio: parseFloat(e.target.value)}))}
-                  className="input w-full bg-gray-700 border-gray-600 text-white focus:border-blue-500"
-                >
-                  <option value={1}>1:1 (Risk 2% to gain 2%)</option>
-                  <option value={1.5}>1:1.5 (Risk 1.33% to gain 2%)</option>
-                  <option value={2}>1:2 (Risk 1% to gain 2%)</option>
-                  <option value={3}>1:3 (Risk 0.67% to gain 2%)</option>
-                  <option value={4}>1:4 (Risk 0.5% to gain 2%)</option>
-                </select>
-                <p className="text-xs text-gray-400 mt-1">How much you're willing to risk vs. potential gain</p>
+                <p className="text-xs text-gray-400 mt-1">Minimum price movement required to generate crossover signals</p>
               </div>
             </div>
           </>
@@ -254,15 +202,17 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Trade Amount (BTC)</label>
+              <label className="block text-sm text-gray-400 mb-1">Min Movement (%)</label>
               <input
                 type="number"
-                value={params.tradeAmount}
-                onChange={(e) => handleParameterChange(strategy, 'tradeAmount', e.target.value)}
+                value={params.minMovementPercent}
+                onChange={(e) => handleParameterChange(strategy, 'minMovementPercent', e.target.value)}
                 className="input w-full"
-                min="0.001"
-                step="0.001"
+                min="0.1"
+                max="5.0"
+                step="0.1"
               />
+              <p className="text-xs text-gray-400 mt-1">Minimum price movement required for signals</p>
             </div>
           </>
         )}
@@ -303,15 +253,17 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
               />
             </div>
             <div>
-              <label className="block text-sm text-gray-400 mb-1">Trade Amount (BTC)</label>
+              <label className="block text-sm text-gray-400 mb-1">Min Movement (%)</label>
               <input
                 type="number"
-                value={params.tradeAmount}
-                onChange={(e) => handleParameterChange(strategy, 'tradeAmount', e.target.value)}
+                value={params.minMovementPercent}
+                onChange={(e) => handleParameterChange(strategy, 'minMovementPercent', e.target.value)}
                 className="input w-full"
-                min="0.001"
-                step="0.001"
+                min="0.1"
+                max="5.0"
+                step="0.1"
               />
+              <p className="text-xs text-gray-400 mt-1">Minimum price movement required for signals</p>
             </div>
           </>
         )}
@@ -414,54 +366,6 @@ const StrategyControls = ({ strategies, onStrategyAction, onSmaPeriodChange, onT
             ? `${selectedStrategy.toUpperCase()} strategy is running in ${tradingMode} mode`
             : `Start the ${selectedStrategy.toUpperCase()} strategy to begin generating signals`
           }
-        </div>
-      </div>
-
-      {/* Trading Mode Controls */}
-      <div className="mt-6">
-        <h4 className="text-sm font-medium text-gray-300 mb-3">Trading Mode</h4>
-        <div className="grid grid-cols-3 gap-2">
-          <button
-            onClick={() => handleTradingModeChange('stopped')}
-            disabled={tradingMode === 'stopped'}
-            className={`btn ${
-              tradingMode === 'stopped' 
-                ? 'bg-gray-600 text-white cursor-not-allowed opacity-75' 
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            <Pause className="h-4 w-4 mr-2" />
-            {tradingMode === 'stopped' ? 'Stopped' : 'Stop'}
-          </button>
-          <button
-            onClick={() => handleTradingModeChange('simulation')}
-            disabled={tradingMode === 'simulation'}
-            className={`btn ${
-              tradingMode === 'simulation' 
-                ? 'bg-blue-600 text-white cursor-not-allowed opacity-75' 
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            <Play className="h-4 w-4 mr-2" />
-            {tradingMode === 'simulation' ? 'Simulating' : 'Simulate'}
-          </button>
-          <button
-            onClick={() => handleTradingModeChange('active')}
-            disabled={tradingMode === 'active'}
-            className={`btn ${
-              tradingMode === 'active' 
-                ? 'bg-green-600 text-white cursor-not-allowed opacity-75' 
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            <DollarSign className="h-4 w-4 mr-2" />
-            {tradingMode === 'active' ? 'Trading' : 'Trade'}
-          </button>
-        </div>
-        <div className="mt-2 text-sm text-gray-400">
-          {tradingMode === 'stopped' && 'Trading is stopped. No signals will be shown.'}
-          {tradingMode === 'simulation' && 'Simulation mode. Signals shown but no real trades.'}
-          {tradingMode === 'active' && 'Active trading. Real trades will be executed.'}
         </div>
       </div>
     </div>

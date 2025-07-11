@@ -8,6 +8,7 @@ class RSIStrategy extends BaseStrategy {
     this.period = parameters.period || 14;
     this.oversoldThreshold = parameters.oversoldThreshold || 30;
     this.overboughtThreshold = parameters.overboughtThreshold || 70;
+    this.minMovementPercent = parameters.minMovementPercent || 0.005; // 0.5% price movement minimum
     this.tradeAmount = parameters.tradeAmount || 0.01;
     this.mode = parameters.mode || 'simulation';
     
@@ -17,6 +18,8 @@ class RSIStrategy extends BaseStrategy {
     this.rsi = null;
     this.position = 'none';
     this.trades = [];
+    this.lastSignalPrice = {}; // Track last signal price for movement filtering
+    this.tradingFlags = new Map(); // Track trading status per product
     
     // Trading engine reference (will be set when strategy is started)
     this.tradingEngine = null;
@@ -86,26 +89,38 @@ class RSIStrategy extends BaseStrategy {
     
     // Oversold condition - Buy Signal
     if (this.rsi <= this.oversoldThreshold && this.position !== 'long') {
-      this.generateBuySignal({
-        productId,
-        reason: `RSI Oversold - RSI: ${this.rsi.toFixed(2)}`,
-        rsi: this.rsi,
-        price: currentPrice,
-        confidence: this.calculateConfidence('buy')
-      });
-      this.position = 'long';
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'BUY')) {
+        // Generate trade signals if in simulation/active mode
+        if (this.mode === 'simulation' || this.mode === 'active') {
+          this.generateBuySignal({
+            productId,
+            reason: `RSI Oversold - RSI: ${this.rsi.toFixed(2)}`,
+            rsi: this.rsi,
+            price: currentPrice,
+            confidence: this.calculateConfidence('buy')
+          });
+        }
+        this.position = 'long';
+        this.lastSignalPrice[productId] = currentPrice; // Track signal price
+      }
     }
     
     // Overbought condition - Sell Signal
     else if (this.rsi >= this.overboughtThreshold && this.position !== 'short') {
-      this.generateSellSignal({
-        productId,
-        reason: `RSI Overbought - RSI: ${this.rsi.toFixed(2)}`,
-        rsi: this.rsi,
-        price: currentPrice,
-        confidence: this.calculateConfidence('sell')
-      });
-      this.position = 'short';
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'SELL')) {
+        // Generate trade signals if in simulation/active mode
+        if (this.mode === 'simulation' || this.mode === 'active') {
+          this.generateSellSignal({
+            productId,
+            reason: `RSI Overbought - RSI: ${this.rsi.toFixed(2)}`,
+            rsi: this.rsi,
+            price: currentPrice,
+            confidence: this.calculateConfidence('sell')
+          });
+        }
+        this.position = 'short';
+        this.lastSignalPrice[productId] = currentPrice; // Track signal price
+      }
     }
     
     // Reset position when RSI returns to neutral zone
@@ -351,6 +366,11 @@ class RSIStrategy extends BaseStrategy {
       logger.info(`[RSI] Overbought threshold updated to: ${this.overboughtThreshold}`);
     }
     
+    if (parameters.minMovementPercent !== undefined) {
+      this.minMovementPercent = parameters.minMovementPercent;
+      logger.info(`[RSI] Min movement percent updated to: ${this.minMovementPercent}`);
+    }
+    
     if (parameters.tradeAmount !== undefined) {
       this.tradeAmount = parameters.tradeAmount;
       logger.info(`[RSI] Trade amount updated to: ${this.tradeAmount}`);
@@ -367,6 +387,42 @@ class RSIStrategy extends BaseStrategy {
         logger.info(`[RSI] Reset performance and position for fresh start in ${this.mode} mode`);
       }
     }
+  }
+
+  shouldGenerateCrossoverSignal(productId, currentPrice, signalType) {
+    // Check minimum price movement for crossover signals (visual/logging)
+    const lastSignalPrice = this.lastSignalPrice[productId];
+    
+    if (lastSignalPrice) {
+      const priceMovement = Math.abs(currentPrice - lastSignalPrice);
+      const tradeValueMovement = priceMovement * this.tradeAmount;
+      const baseTradeValue = lastSignalPrice * this.tradeAmount;
+      const movementPercent = tradeValueMovement / baseTradeValue;
+      
+      logger.info(`[RSI] Movement check for ${signalType} signal on ${productId}:`, {
+        priceMovement: priceMovement.toFixed(8),
+        tradeAmount: this.tradeAmount,
+        tradeValueMovement: tradeValueMovement.toFixed(6),
+        baseTradeValue: baseTradeValue.toFixed(6),
+        movementPercent: (movementPercent * 100).toFixed(3) + '%',
+        minMovementPercent: (this.minMovementPercent * 100).toFixed(3) + '%'
+      });
+      
+      // Signal is valid if trade value movement percentage exceeds minimum percentage
+      const percentageMet = movementPercent >= this.minMovementPercent;
+      
+      if (!percentageMet) {
+        logger.info(`[RSI] Movement too small for ${signalType} signal on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% < ${(this.minMovementPercent * 100).toFixed(3)}%`);
+        return false;
+      }
+      
+      logger.info(`[RSI] Movement sufficient for ${signalType} signal on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% ✓`);
+    } else {
+      // If no previous signal price, allow the first signal
+      logger.info(`[RSI] No previous signal price for ${productId}, allowing first ${signalType} signal`);
+    }
+    
+    return true;
   }
 }
 

@@ -17,14 +17,8 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     this.tradeAmount = parameters.tradeAmount || 0.01; // Default trade amount
     this.mode = parameters.mode || 'simulation'; // trading mode
     
-    // New risk management parameters
-    this.targetGainPercent = parameters.targetGainPercent || 2.0; // 2% target gain
-    this.riskRewardRatio = parameters.riskRewardRatio || 2.0; // 1:2 risk:reward ratio
-    
-    // Track entry prices for each position to calculate stop loss and take profit
+    // Track entry prices for each position 
     this.entryPrices = {}; // productId -> entry price
-    this.stopLossPrices = {}; // productId -> stop loss price
-    this.takeProfitPrices = {}; // productId -> take profit price
     
     // Track if we've generated initial buy signal for each crypto
     this.initialBuyGenerated = {};
@@ -87,21 +81,8 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     }
   }
 
-  shouldGenerateSignal(productId, currentPrice, signalType) {
-    // Check if trading is in progress for this product
-    if (this.tradingFlags.get(productId)) {
-      logger.info(`[SMA] 🚫 Blocking ${signalType} signal for ${productId}: trading already in progress`);
-      return false;
-    }
-    
-    logger.info(`[SMA] ✅ Trading flag check passed for ${productId} (${signalType}): no active trade`);
-    
-    // Buy signals can happen immediately when trading starts
-    if (signalType === 'BUY' || signalType === 'buy') {
-      return true;
-    }
-    
-    // Sell signals require minimum price movement check
+  shouldGenerateCrossoverSignal(productId, currentPrice, signalType) {
+    // Check minimum price movement for crossover signals (visual/logging)
     const lastSignalPrice = this.lastSignalPrice[productId];
     
     if (lastSignalPrice) {
@@ -110,7 +91,7 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
       const baseTradeValue = lastSignalPrice * this.tradeAmount;
       const movementPercent = tradeValueMovement / baseTradeValue;
       
-      logger.info(`[SMA] Movement check for ${signalType} signal on ${productId}:`, {
+      logger.info(`[SMA] Movement check for ${signalType} crossover on ${productId}:`, {
         priceMovement: priceMovement.toFixed(8),
         tradeAmount: this.tradeAmount,
         tradeValueMovement: tradeValueMovement.toFixed(6),
@@ -123,11 +104,14 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
       const percentageMet = movementPercent >= this.minMovementPercent;
       
       if (!percentageMet) {
-        logger.info(`[SMA] Movement too small for ${signalType} on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% < ${(this.minMovementPercent * 100).toFixed(3)}%`);
+        logger.info(`[SMA] Movement too small for ${signalType} crossover on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% < ${(this.minMovementPercent * 100).toFixed(3)}%`);
         return false;
       }
       
-      logger.info(`[SMA] Movement sufficient for ${signalType} on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% ✓`);
+      logger.info(`[SMA] Movement sufficient for ${signalType} crossover on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% ✓`);
+    } else {
+      // If no previous signal price, allow the first signal (both BUY and SELL)
+      logger.info(`[SMA] No previous signal price for ${productId}, allowing first ${signalType} crossover`);
     }
     
     return true;
@@ -136,19 +120,12 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
   async generateBuySignal(productId, price, sma) {
     logger.info(`[SMA] 🟢 generateBuySignal called for ${productId}: price=${price}, sma=${sma}, mode=${this.mode}`);
     
-    if (!this.shouldGenerateSignal(productId, price, 'BUY')) {
-      logger.info(`[SMA] ❌ shouldGenerateSignal returned false for BUY signal on ${productId}`);
-      return;
-    }
-    
-    logger.info(`[SMA] ✅ shouldGenerateSignal returned true, proceeding with BUY signal generation`);
-    
     // Update tracking
     this.lastSignalPrice[productId] = price;
     this.positions[productId] = 'long'; // Set position to long after buy
     
-    // Set risk management prices for the position
-    this.setRiskManagementPrices(productId, price);
+    // Set entry price for tracking
+    this.entryPrices[productId] = price;
     
     // Create signal
     const signal = {
@@ -170,27 +147,18 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     // Execute trade based on mode
     let trade = null;
     
-    // Set trading flag to prevent concurrent trades for this product
-    this.tradingFlags.set(productId, true);
-    
-    try {
-      if (this.mode === 'simulation') {
-        logger.info(`[SMA] 🔄 Simulating trade for BUY signal in simulation mode`);
-        trade = await this.simulateTrade(signal);
-        signal.trade = trade;
-        logger.info(`[SMA] 📊 Simulated trade result:`, trade);
-      } else if (this.mode === 'active') {
-        logger.info(`[SMA] 🔄 Executing real trade for BUY signal in active mode`);
-        trade = await this.executeTrade(signal);
-        signal.trade = trade;
-        logger.info(`[SMA] 📊 Real trade execution result:`, trade);
-      } else {
-        logger.info(`[SMA] ⏸️  Not executing trade - mode is ${this.mode}`);
-      }
-    } finally {
-      // Always clear the trading flag, regardless of trade outcome
-      this.tradingFlags.set(productId, false);
-      logger.info(`[SMA] 🔓 Trading flag cleared for ${productId}`);
+    if (this.mode === 'simulation') {
+      logger.info(`[SMA] 🔄 Simulating trade for BUY signal in simulation mode`);
+      trade = await this.simulateTrade(signal);
+      signal.trade = trade;
+      logger.info(`[SMA] 📊 Simulated trade result:`, trade);
+    } else if (this.mode === 'active') {
+      logger.info(`[SMA] 🔄 Executing real trade for BUY signal in active mode`);
+      trade = await this.executeTrade(signal);
+      signal.trade = trade;
+      logger.info(`[SMA] 📊 Real trade execution result:`, trade);
+    } else {
+      logger.info(`[SMA] ⏸️  Not executing trade - mode is ${this.mode}`);
     }
     
     logger.info(`[SMA] BUY signal for ${productId}: price ${price} crossed above SMA ${sma.toFixed(2)}`);
@@ -204,19 +172,12 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
   async generateSellSignal(productId, price, sma) {
     logger.info(`[SMA] 🔴 generateSellSignal called for ${productId}: price=${price}, sma=${sma}, mode=${this.mode}`);
     
-    if (!this.shouldGenerateSignal(productId, price, 'SELL')) {
-      logger.info(`[SMA] ❌ shouldGenerateSignal returned false for SELL signal on ${productId}`);
-      return;
-    }
-    
-    logger.info(`[SMA] ✅ shouldGenerateSignal returned true, proceeding with SELL signal generation`);
-    
     // Update tracking
     this.lastSignalPrice[productId] = price;
     this.positions[productId] = 'none'; // Set position to none after sell (cash position)
     
-    // Clear risk management prices
-    this.clearRiskManagementPrices(productId);
+    // Clear entry price
+    delete this.entryPrices[productId];
     
     // Create signal
     const signal = {
@@ -238,27 +199,18 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     // Execute trade based on mode
     let trade = null;
     
-    // Set trading flag to prevent concurrent trades for this product
-    this.tradingFlags.set(productId, true);
-    
-    try {
-      if (this.mode === 'simulation') {
-        logger.info(`[SMA] 🔄 Simulating trade for SELL signal in simulation mode`);
-        trade = await this.simulateTrade(signal);
-        signal.trade = trade;
-        logger.info(`[SMA] 📊 Simulated trade result:`, trade);
-      } else if (this.mode === 'active') {
-        logger.info(`[SMA] 🔄 Executing real trade for SELL signal in active mode`);
-        trade = await this.executeTrade(signal);
-        signal.trade = trade;
-        logger.info(`[SMA] 📊 Real trade execution result:`, trade);
-      } else {
-        logger.info(`[SMA] ⏸️  Not executing trade - mode is ${this.mode}`);
-      }
-    } finally {
-      // Always clear the trading flag, regardless of trade outcome
-      this.tradingFlags.set(productId, false);
-      logger.info(`[SMA] 🔓 Trading flag cleared for ${productId}`);
+    if (this.mode === 'simulation') {
+      logger.info(`[SMA] 🔄 Simulating trade for SELL signal in simulation mode`);
+      trade = await this.simulateTrade(signal);
+      signal.trade = trade;
+      logger.info(`[SMA] 📊 Simulated trade result:`, trade);
+    } else if (this.mode === 'active') {
+      logger.info(`[SMA] 🔄 Executing real trade for SELL signal in active mode`);
+      trade = await this.executeTrade(signal);
+      signal.trade = trade;
+      logger.info(`[SMA] 📊 Real trade execution result:`, trade);
+    } else {
+      logger.info(`[SMA] ⏸️  Not executing trade - mode is ${this.mode}`);
     }
     
     logger.info(`[SMA] SELL signal for ${productId}: price ${price} crossed below SMA ${sma.toFixed(2)}`);
@@ -295,20 +247,22 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     if (!this.initialBuyGenerated[productId] && lastPrice <= lastSma && currentPrice > sma) {
       logger.info(`[SMA] ✅ Initial BUY crossover detected for ${productId}: price ${currentPrice} crossed above SMA ${sma.toFixed(2)}`);
       
-      // Always emit crossover signal for visualization (grey marker)
-      this.emitCrossoverSignal(productId, currentPrice, sma, 'BUY');
-      
-      // Only generate actual trade signals if in simulation/active mode and position allows it
-      if ((this.mode === 'simulation' || this.mode === 'active') && position !== 'long') {
-        logger.info(`[SMA] 🚀 Calling generateBuySignal for initial buy in ${this.mode} mode`);
-        this.generateBuySignal(productId, currentPrice, sma);
+      // Check minimum movement before emitting any signals (including visualization)
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'BUY')) {
+        // Emit crossover signal for visualization (grey marker)
+        this.emitCrossoverSignal(productId, currentPrice, sma, 'BUY');
+        
+        // Generate trade signals if in simulation/active mode and position allows it
+        if ((this.mode === 'simulation' || this.mode === 'active') && position !== 'long') {
+          logger.info(`[SMA] 🚀 Calling generateBuySignal for initial buy in ${this.mode} mode`);
+          this.generateBuySignal(productId, currentPrice, sma);
+        } else {
+          logger.info(`[SMA] Initial crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
+        }
         this.initialBuyGenerated[productId] = true;
-        logger.info(`[SMA] ✅ Initial buy signal processing complete, initialBuyGenerated set to true`);
-        return; // Exit early to avoid duplicate signal
       } else {
-        logger.info(`[SMA] Initial crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
-        // Still set this to true so we don't keep detecting the same initial crossover
-        this.initialBuyGenerated[productId] = true;
+        logger.info(`[SMA] Initial BUY crossover detected but insufficient movement - no signals emitted`);
+        // Don't set initialBuyGenerated to true yet, allow for future crossovers with sufficient movement
       }
     }
     
@@ -317,30 +271,40 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
     if (this.initialBuyGenerated[productId] && lastPrice <= lastSma && currentPrice > sma) {
       logger.info(`[SMA] BUY crossover detected for ${productId}: price ${currentPrice} crossed above SMA ${sma.toFixed(2)} (position was ${position})`);
       
-      // Always emit crossover signal for visualization (grey marker)
-      this.emitCrossoverSignal(productId, currentPrice, sma, 'BUY');
-      
-      // Only generate actual trade signals if in simulation/active mode and position allows it
-      if ((this.mode === 'simulation' || this.mode === 'active') && position !== 'long') {
-        logger.info(`[SMA] Generating BUY trade signal for crossover`);
-        this.generateBuySignal(productId, currentPrice, sma);
+      // Check minimum movement before emitting any signals (including visualization)
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'BUY')) {
+        // Emit crossover signal for visualization (grey marker)
+        this.emitCrossoverSignal(productId, currentPrice, sma, 'BUY');
+        
+        // Generate trade signals if in simulation/active mode and position allows it
+        if ((this.mode === 'simulation' || this.mode === 'active') && position !== 'long') {
+          logger.info(`[SMA] Generating BUY trade signal for crossover`);
+          this.generateBuySignal(productId, currentPrice, sma);
+        } else {
+          logger.info(`[SMA] Crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
+        }
       } else {
-        logger.info(`[SMA] Crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
+        logger.info(`[SMA] BUY crossover detected but insufficient movement - no signals emitted`);
       }
     }
     // Sell crossover: last price was above SMA AND current price is below SMA  
     else if (lastPrice >= lastSma && currentPrice < sma) {
       logger.info(`[SMA] SELL crossover detected for ${productId}: price ${currentPrice} crossed below SMA ${sma.toFixed(2)} (position was ${position})`);
       
-      // Always emit crossover signal for visualization (grey marker)
-      this.emitCrossoverSignal(productId, currentPrice, sma, 'SELL');
-      
-      // Only generate actual trade signals if in simulation/active mode and position allows it
-      if ((this.mode === 'simulation' || this.mode === 'active') && position === 'long') {
-        logger.info(`[SMA] Generating SELL trade signal for crossover`);
-        this.generateSellSignal(productId, currentPrice, sma);
+      // Check minimum movement before emitting any signals (including visualization)
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'SELL')) {
+        // Emit crossover signal for visualization (grey marker)
+        this.emitCrossoverSignal(productId, currentPrice, sma, 'SELL');
+        
+        // Generate trade signals if in simulation/active mode and position allows it
+        if ((this.mode === 'simulation' || this.mode === 'active') && position === 'long') {
+          logger.info(`[SMA] Generating SELL trade signal for crossover`);
+          this.generateSellSignal(productId, currentPrice, sma);
+        } else {
+          logger.info(`[SMA] Crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
+        }
       } else {
-        logger.info(`[SMA] Crossover detected but not generating trade signal (mode=${this.mode}, position=${position})`);
+        logger.info(`[SMA] SELL crossover detected but insufficient movement - no signals emitted`);
       }
     } else {
       logger.info(`[SMA] 🚫 No crossover for ${productId}: conditions not met`);
@@ -374,7 +338,7 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
   }
 
   getDescription() {
-    return `Simple Moving Average strategy using ${this.period}-period SMA. In simulation/trading mode: generates initial BUY on first crossover above SMA, then follows regular crossover signals. SELL signals require trade value movement ≥ ${(this.minMovementPercent * 100).toFixed(1)}% of ${this.tradeAmount} trade amount.`;
+    return `Simple Moving Average strategy using ${this.period}-period SMA. Crossover signals require minimum trade value movement of ${(this.minMovementPercent * 100).toFixed(1)}% to reduce noise. Generates BUY signals when price crosses above SMA and SELL signals when price crosses below SMA. Trade signals are sent when in simulation or active mode.`;
   }
 
   emitCrossoverSignal(productId, price, sma, type) {
@@ -394,6 +358,10 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
         isVisualizationOnly: true // Flag to indicate this is for chart visualization
       }
     };
+
+    // Update last signal price for movement tracking when crossover signal is emitted
+    this.lastSignalPrice[productId] = price;
+    logger.debug(`[SMA] Updated lastSignalPrice for ${productId} to ${price} after ${type} crossover`);
 
     // Emit crossover signal over Socket.IO if available
     if (global.tradingBot && global.tradingBot.io) {
@@ -459,17 +427,6 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
       logger.info(`[SMA] Min movement percent updated to: ${this.minMovementPercent}`);
     }
     
-    // Update risk management parameters
-    if (parameters.targetGainPercent !== undefined) {
-      this.targetGainPercent = parameters.targetGainPercent;
-      logger.info(`[SMA] Target gain percent updated to: ${this.targetGainPercent}%`);
-    }
-    
-    if (parameters.riskRewardRatio !== undefined) {
-      this.riskRewardRatio = parameters.riskRewardRatio;
-      logger.info(`[SMA] Risk:Reward ratio updated to: 1:${this.riskRewardRatio}`);
-    }
-    
     // Update trade amount if provided
     if (parameters.tradeAmount !== undefined) {
       this.tradeAmount = parameters.tradeAmount;
@@ -504,55 +461,6 @@ class SimpleMovingAverageStrategy extends BaseStrategy {
         this.calculateSMA(productId);
       });
     }
-  }
-
-  setRiskManagementPrices(productId, entryPrice) {
-    this.entryPrices[productId] = entryPrice;
-    
-    // Calculate stop loss price (entry - risk %)
-    // Risk % = Target Gain % / Risk:Reward Ratio
-    const riskPercent = this.targetGainPercent / this.riskRewardRatio;
-    this.stopLossPrices[productId] = entryPrice * (1 - riskPercent / 100);
-    
-    // Calculate take profit price (entry + target gain %)
-    this.takeProfitPrices[productId] = entryPrice * (1 + this.targetGainPercent / 100);
-    
-    logger.info(`[SMA] Risk management set for ${productId}:`, {
-      entryPrice: entryPrice.toFixed(2),
-      stopLossPrice: this.stopLossPrices[productId].toFixed(2),
-      takeProfitPrice: this.takeProfitPrices[productId].toFixed(2),
-      riskAmount: `${riskPercent.toFixed(2)}%`,
-      targetGain: `${this.targetGainPercent.toFixed(2)}%`,
-      riskRewardRatio: `1:${this.riskRewardRatio}`
-    });
-  }
-  
-  clearRiskManagementPrices(productId) {
-    delete this.entryPrices[productId];
-    delete this.stopLossPrices[productId];
-    delete this.takeProfitPrices[productId];
-    logger.info(`[SMA] Risk management cleared for ${productId}`);
-  }
-  
-  getRiskManagementStatus(productId) {
-    const entryPrice = this.entryPrices[productId];
-    const stopLossPrice = this.stopLossPrices[productId];
-    const takeProfitPrice = this.takeProfitPrices[productId];
-    
-    if (!entryPrice) {
-      return null;
-    }
-    
-    const riskPercent = this.targetGainPercent / this.riskRewardRatio;
-    
-    return {
-      entryPrice,
-      stopLossPrice,
-      takeProfitPrice,
-      riskPercent: riskPercent,
-      targetGainPercent: this.targetGainPercent,
-      riskRewardRatio: this.riskRewardRatio
-    };
   }
 
   async executeTrade(signal) {

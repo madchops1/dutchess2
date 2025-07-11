@@ -8,6 +8,7 @@ class MACDStrategy extends BaseStrategy {
     this.fastPeriod = parameters.fastPeriod || 12;
     this.slowPeriod = parameters.slowPeriod || 26;
     this.signalPeriod = parameters.signalPeriod || 9;
+    this.minMovementPercent = parameters.minMovementPercent || 0.005; // 0.5% price movement minimum
     this.tradeAmount = parameters.tradeAmount || 0.01;
     this.mode = parameters.mode || 'simulation';
     
@@ -22,6 +23,8 @@ class MACDStrategy extends BaseStrategy {
     this.position = 'none';
     this.prevHistogram = null;
     this.trades = [];
+    this.lastSignalPrice = {}; // Track last signal price for movement filtering
+    this.tradingFlags = new Map(); // Track trading status per product
     
     // Trading engine reference (will be set when strategy is started)
     this.tradingEngine = null;
@@ -127,30 +130,42 @@ class MACDStrategy extends BaseStrategy {
     
     // Bullish Signal: MACD crosses above Signal Line
     if (this.macdLine > this.signalLine && this.prevHistogram <= 0 && this.histogram > 0) {
-      this.generateBuySignal({
-        productId,
-        reason: 'MACD Bullish Crossover - MACD crossed above Signal Line',
-        macdLine: this.macdLine,
-        signalLine: this.signalLine,
-        histogram: this.histogram,
-        price: currentPrice,
-        confidence: this.calculateConfidence('buy')
-      });
-      this.position = 'long';
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'BUY')) {
+        // Generate trade signals if in simulation/active mode
+        if (this.mode === 'simulation' || this.mode === 'active') {
+          this.generateBuySignal({
+            productId,
+            reason: 'MACD Bullish Crossover - MACD crossed above Signal Line',
+            macdLine: this.macdLine,
+            signalLine: this.signalLine,
+            histogram: this.histogram,
+            price: currentPrice,
+            confidence: this.calculateConfidence('buy')
+          });
+        }
+        this.position = 'long';
+        this.lastSignalPrice[productId] = currentPrice; // Track signal price
+      }
     }
     
     // Bearish Signal: MACD crosses below Signal Line
     else if (this.macdLine < this.signalLine && this.prevHistogram >= 0 && this.histogram < 0) {
-      this.generateSellSignal({
-        productId,
-        reason: 'MACD Bearish Crossover - MACD crossed below Signal Line',
-        macdLine: this.macdLine,
-        signalLine: this.signalLine,
-        histogram: this.histogram,
-        price: currentPrice,
-        confidence: this.calculateConfidence('sell')
-      });
-      this.position = 'short';
+      if (this.shouldGenerateCrossoverSignal(productId, currentPrice, 'SELL')) {
+        // Generate trade signals if in simulation/active mode
+        if (this.mode === 'simulation' || this.mode === 'active') {
+          this.generateSellSignal({
+            productId,
+            reason: 'MACD Bearish Crossover - MACD crossed below Signal Line',
+            macdLine: this.macdLine,
+            signalLine: this.signalLine,
+            histogram: this.histogram,
+            price: currentPrice,
+            confidence: this.calculateConfidence('sell')
+          });
+        }
+        this.position = 'short';
+        this.lastSignalPrice[productId] = currentPrice; // Track signal price
+      }
     }
   }
 
@@ -401,6 +416,11 @@ class MACDStrategy extends BaseStrategy {
       logger.info(`[MACD] Signal period updated to: ${this.signalPeriod}`);
     }
     
+    if (parameters.minMovementPercent !== undefined) {
+      this.minMovementPercent = parameters.minMovementPercent;
+      logger.info(`[MACD] Min movement percent updated to: ${this.minMovementPercent}`);
+    }
+    
     if (parameters.tradeAmount !== undefined) {
       this.tradeAmount = parameters.tradeAmount;
       logger.info(`[MACD] Trade amount updated to: ${this.tradeAmount}`);
@@ -417,6 +437,42 @@ class MACDStrategy extends BaseStrategy {
         logger.info(`[MACD] Reset performance and position for fresh start in ${this.mode} mode`);
       }
     }
+  }
+
+  shouldGenerateCrossoverSignal(productId, currentPrice, signalType) {
+    // Check minimum price movement for crossover signals (visual/logging)
+    const lastSignalPrice = this.lastSignalPrice[productId];
+    
+    if (lastSignalPrice) {
+      const priceMovement = Math.abs(currentPrice - lastSignalPrice);
+      const tradeValueMovement = priceMovement * this.tradeAmount;
+      const baseTradeValue = lastSignalPrice * this.tradeAmount;
+      const movementPercent = tradeValueMovement / baseTradeValue;
+      
+      logger.info(`[MACD] Movement check for ${signalType} signal on ${productId}:`, {
+        priceMovement: priceMovement.toFixed(8),
+        tradeAmount: this.tradeAmount,
+        tradeValueMovement: tradeValueMovement.toFixed(6),
+        baseTradeValue: baseTradeValue.toFixed(6),
+        movementPercent: (movementPercent * 100).toFixed(3) + '%',
+        minMovementPercent: (this.minMovementPercent * 100).toFixed(3) + '%'
+      });
+      
+      // Signal is valid if trade value movement percentage exceeds minimum percentage
+      const percentageMet = movementPercent >= this.minMovementPercent;
+      
+      if (!percentageMet) {
+        logger.info(`[MACD] Movement too small for ${signalType} signal on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% < ${(this.minMovementPercent * 100).toFixed(3)}%`);
+        return false;
+      }
+      
+      logger.info(`[MACD] Movement sufficient for ${signalType} signal on ${productId}. Trade value movement: ${(movementPercent * 100).toFixed(3)}% ✓`);
+    } else {
+      // If no previous signal price, allow the first signal
+      logger.info(`[MACD] No previous signal price for ${productId}, allowing first ${signalType} signal`);
+    }
+    
+    return true;
   }
 }
 
